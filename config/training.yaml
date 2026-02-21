@@ -1,0 +1,6 @@
+training:
+  epochs: 50
+  batch_size: 16
+  image_size: 640
+  device: cpu
+  dataset_path: data/processed

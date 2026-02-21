@@ -1,0 +1,4 @@
+deployment:
+  environment: production
+  input_source: webcam
+  save_results: true
