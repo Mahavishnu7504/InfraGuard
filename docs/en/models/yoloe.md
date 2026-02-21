@@ -113,8 +113,9 @@ You can fine-tune any [pretrained YOLOE model](#textvisual-prompt-models) on you
         Fine-tuning a YOLOE pretrained checkpoint mostly follows the [standard YOLO training procedure](../modes/train.md). The key difference is explicitly passing `YOLOEPESegTrainer` as the `trainer` parameter to `model.train()`:
 
         ```python
-        from ultralytics import YOLOE
         from ultralytics.models.yolo.yoloe import YOLOEPESegTrainer
+
+        from ultralytics import YOLOE
 
         model = YOLOE("yoloe-26s-seg.pt")
 
@@ -132,8 +133,9 @@ You can fine-tune any [pretrained YOLOE model](#textvisual-prompt-models) on you
         All [pretrained YOLOE models](#textvisual-prompt-models) perform instance segmentation by default. To use these pretrained checkpoints for training a detection model, initialize a detection model from scratch using the YAML configuration, then load the pretrained segmentation checkpoint of the same scale. Note that we use `YOLOEPETrainer` instead of `YOLOEPESegTrainer` since we're training a detection model:
 
         ```python
-        from ultralytics import YOLOE
         from ultralytics.models.yolo.yoloe import YOLOEPETrainer
+
+        from ultralytics import YOLOE
 
         # Initialize a detection model from a config
         model = YOLOE("yoloe-26s.yaml")
@@ -157,8 +159,9 @@ You can fine-tune any [pretrained YOLOE model](#textvisual-prompt-models) on you
         **Instance segmentation**
 
         ```python
-        from ultralytics import YOLOE
         from ultralytics.models.yolo.yoloe import YOLOEPESegTrainer
+
+        from ultralytics import YOLOE
 
         # Load a pretrained segmentation model
         model = YOLOE("yoloe-26s-seg.pt")
@@ -201,8 +204,9 @@ You can fine-tune any [pretrained YOLOE model](#textvisual-prompt-models) on you
         For object detection task, the training process is almost the same as the instance segmentation example above but we use `YOLOEPETrainer` instead of `YOLOEPESegTrainer`, and initialize the object detection model using the YAML and then load the weights from the pretrained instance segmentation checkpoint.
 
         ```python
-        from ultralytics import YOLOE
         from ultralytics.models.yolo.yoloe import YOLOEPETrainer
+
+        from ultralytics import YOLOE
 
         # Initialize a detection model from a config
         model = YOLOE("yoloe-26s.yaml")
@@ -281,9 +285,9 @@ YOLOE supports both text-based and visual prompting. Using prompts is straightfo
 
         ```python
         import numpy as np
+        from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
 
         from ultralytics import YOLOE
-        from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
 
         # Initialize a YOLOE model
         model = YOLOE("yoloe-26l-seg.pt")
@@ -324,9 +328,9 @@ YOLOE supports both text-based and visual prompting. Using prompts is straightfo
 
         ```python
         import numpy as np
+        from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
 
         from ultralytics import YOLOE
-        from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
 
         # Initialize a YOLOE model
         model = YOLOE("yoloe-26l-seg.pt")
@@ -362,9 +366,9 @@ YOLOE supports both text-based and visual prompting. Using prompts is straightfo
 
         ```python
         import numpy as np
+        from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
 
         from ultralytics import YOLOE
-        from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
 
         # Initialize a YOLOE model
         model = YOLOE("yoloe-26l-seg.pt")
@@ -536,8 +540,9 @@ The export process is similar to other YOLO models, with the added flexibility o
     === "Text Prompt"
 
         ```python
-        from ultralytics import YOLOE
         from ultralytics.models.yolo.yoloe import YOLOESegTrainerFromScratch
+
+        from ultralytics import YOLOE
 
         # Option 1: Use Python dictionary
         data = dict(
@@ -594,8 +599,9 @@ The export process is similar to other YOLO models, with the added flexibility o
         Note this step is optional, you can directly start from segmentation as well.
 
         ```python
-        from ultralytics import YOLOE
         from ultralytics.utils.patches import torch_load
+
+        from ultralytics import YOLOE
 
         det_model = YOLOE("yoloe-26l.yaml")
         state = torch_load("yoloe-26l-seg.pt")
@@ -606,8 +612,9 @@ The export process is similar to other YOLO models, with the added flexibility o
         Start training:
 
         ```python
-        from ultralytics import YOLOE
         from ultralytics.models.yolo.yoloe import YOLOESegVPTrainer
+
+        from ultralytics import YOLOE
 
         data = dict(
             train=dict(
@@ -677,8 +684,9 @@ The export process is similar to other YOLO models, with the added flexibility o
         Note this step is optional, you can directly start from segmentation as well.
 
         ```python
-        from ultralytics import YOLOE
         from ultralytics.utils.patches import torch_load
+
+        from ultralytics import YOLOE
 
         det_model = YOLOE("yoloe-26l.yaml")
         state = torch_load("yoloe-26l-seg.pt")

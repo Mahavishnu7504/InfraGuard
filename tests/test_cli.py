@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-
-from tests import CUDA_DEVICE_COUNT, CUDA_IS_AVAILABLE, MODELS, TASK_MODEL_DATA
 from ultralytics.utils import ARM64, ASSETS, LINUX, WEIGHTS_DIR, checks
 from ultralytics.utils.torch_utils import TORCH_1_11
+
+from tests import CUDA_DEVICE_COUNT, CUDA_IS_AVAILABLE, MODELS, TASK_MODEL_DATA
 
 
 def run(cmd: str) -> None:
@@ -78,8 +78,9 @@ def test_fastsam(
     run(f"yolo segment val {task} model={model} data={data} imgsz=32")
     run(f"yolo segment predict model={model} source={source} imgsz=32 save save_crop save_txt")
 
-    from ultralytics import FastSAM
     from ultralytics.models.sam import Predictor
+
+    from ultralytics import FastSAM
 
     # Create a FastSAM model
     sam_model = FastSAM(model)  # or FastSAM-x.pt

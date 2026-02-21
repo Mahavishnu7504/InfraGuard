@@ -7,11 +7,11 @@ import time
 from pathlib import Path
 
 import pytest
+from ultralytics.utils import ASSETS_URL, DATASETS_DIR, SETTINGS
+from ultralytics.utils.checks import check_requirements
 
 from tests import MODEL, SOURCE
 from ultralytics import YOLO, download
-from ultralytics.utils import ASSETS_URL, DATASETS_DIR, SETTINGS
-from ultralytics.utils.checks import check_requirements
 
 
 @pytest.mark.slow

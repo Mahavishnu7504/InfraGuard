@@ -5,10 +5,10 @@ from __future__ import annotations
 import time
 
 import cv2
-
-from ultralytics import YOLO
 from ultralytics.utils import LOGGER
 from ultralytics.utils.plotting import Annotator, colors
+
+from ultralytics import YOLO
 
 enable_gpu = False  # Set True if running with CUDA
 model_file = "yolo11s.pt"  # Path to model file
