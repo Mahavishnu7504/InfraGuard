@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 import torch
-
-from tests import CUDA_DEVICE_COUNT, CUDA_IS_AVAILABLE, MODEL, SOURCE
-from ultralytics import YOLO
 from ultralytics.cfg import TASK2DATA, TASK2MODEL, TASKS
 from ultralytics.utils import ASSETS, IS_JETSON, WEIGHTS_DIR
 from ultralytics.utils.autodevice import GPUInfo
 from ultralytics.utils.checks import check_amp, check_tensorrt
 from ultralytics.utils.torch_utils import TORCH_1_13
+
+from tests import CUDA_DEVICE_COUNT, CUDA_IS_AVAILABLE, MODEL, SOURCE
+from ultralytics import YOLO
 
 # Try to find idle devices if CUDA is available
 DEVICES = []
@@ -192,8 +192,9 @@ def test_utils_benchmarks():
 @pytest.mark.skipif(not DEVICES, reason="No CUDA devices available")
 def test_predict_sam():
     """Test SAM model predictions using different prompts."""
-    from ultralytics import SAM
     from ultralytics.models.sam import Predictor as SAMPredictor
+
+    from ultralytics import SAM
 
     model = SAM(WEIGHTS_DIR / "sam2.1_b.pt")
     model.info()

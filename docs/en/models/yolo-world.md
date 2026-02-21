@@ -318,8 +318,9 @@ This approach provides a powerful means of customizing state-of-the-art [object 
     === "Python"
 
         ```python
-        from ultralytics import YOLOWorld
         from ultralytics.models.yolo.world.train_world import WorldTrainerFromScratch
+
+        from ultralytics import YOLOWorld
 
         # Option 1: Use Python dictionary
         data = dict(
@@ -455,8 +456,9 @@ Ultralytics offers multiple pretrained YOLO-World models supporting various task
 To reproduce the official results from scratch, you need to prepare the datasets and launch the training using the provided code. The training procedure involves creating a data dictionary and running the `train` method with a custom trainer:
 
 ```python
-from ultralytics import YOLOWorld
 from ultralytics.models.yolo.world.train_world import WorldTrainerFromScratch
+
+from ultralytics import YOLOWorld
 
 data = {
     "train": {

@@ -104,8 +104,9 @@ Customize other components like `Validators` and `Predictors` similarly. For mor
 The `YOLO` model class provides a high-level wrapper for Trainer classes. You can leverage this architecture for greater flexibility in your machine learning workflows:
 
 ```python
-from ultralytics import YOLO
 from ultralytics.models.yolo.detect import DetectionTrainer
+
+from ultralytics import YOLO
 
 
 # Create a custom trainer
