@@ -25,8 +25,9 @@ This guide walks through five common customizations:
 The `YOLO` model class accepts a `trainer` parameter in the `train()` method. This allows you to pass your own trainer class that extends the default behavior:
 
 ```python
-from ultralytics import YOLO
 from ultralytics.models.yolo.detect import DetectionTrainer
+
+from ultralytics import YOLO
 
 
 class CustomTrainer(DetectionTrainer):
@@ -47,10 +48,10 @@ The [validation](../modes/val.md) step computes [precision](https://www.ultralyt
 
 ```python
 import numpy as np
-
-from ultralytics import YOLO
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.utils import LOGGER
+
+from ultralytics import YOLO
 
 
 class MetricsTrainer(DetectionTrainer):
@@ -109,12 +110,12 @@ To customize the loss, subclass the loss classes, model, and trainer:
 ```python
 import torch
 from torch import nn
-
-from ultralytics import YOLO
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.utils import RANK
 from ultralytics.utils.loss import E2ELoss, v8DetectionLoss
+
+from ultralytics import YOLO
 
 
 class WeightedDetectionLoss(v8DetectionLoss):
@@ -187,8 +188,9 @@ model.train(data="coco8.yaml", epochs=10, trainer=WeightedTrainer)
 The trainer saves `best.pt` based on fitness, which defaults to `0.9 × mAP@0.5:0.95 + 0.1 × mAP@0.5`. To use a different metric (like `mAP@0.5` or recall), override `validate()` and return your chosen metric as the fitness value. The built-in `save_model()` will then use it automatically:
 
 ```python
-from ultralytics import YOLO
 from ultralytics.models.yolo.detect import DetectionTrainer
+
+from ultralytics import YOLO
 
 
 class CustomSaveTrainer(DetectionTrainer):
@@ -224,9 +226,10 @@ model.train(data="coco8.yaml", epochs=20, trainer=CustomSaveTrainer)
 [Transfer learning](https://www.ultralytics.com/glossary/transfer-learning) workflows often benefit from freezing the pretrained backbone for the first N epochs, allowing the detection head to adapt before [fine-tuning](https://www.ultralytics.com/glossary/fine-tuning) the entire network. Ultralytics provides a `freeze` parameter to freeze layers at the start of training, and you can use a [callback](../usage/callbacks.md) to unfreeze them after N epochs:
 
 ```python
-from ultralytics import YOLO
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.utils import LOGGER
+
+from ultralytics import YOLO
 
 FREEZE_EPOCHS = 5
 
@@ -269,11 +272,11 @@ Different parts of the network can benefit from different [learning rates](https
 
 ```python
 import torch
-
-from ultralytics import YOLO
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.utils import LOGGER
 from ultralytics.utils.torch_utils import unwrap_model
+
+from ultralytics import YOLO
 
 
 class PerLayerLRTrainer(DetectionTrainer):

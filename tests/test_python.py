@@ -11,9 +11,6 @@ import numpy as np
 import pytest
 import torch
 from PIL import Image
-
-from tests import CFG, MODEL, MODELS, SOURCE, SOURCES_LIST, TASK_MODEL_DATA
-from ultralytics import RTDETR, YOLO
 from ultralytics.cfg import TASK2DATA, TASKS
 from ultralytics.data.build import load_inference_source
 from ultralytics.data.utils import check_det_dataset
@@ -37,6 +34,9 @@ from ultralytics.utils import (
 )
 from ultralytics.utils.downloads import download
 from ultralytics.utils.torch_utils import TORCH_1_11, TORCH_1_13
+
+from tests import CFG, MODEL, MODELS, SOURCE, SOURCES_LIST, TASK_MODEL_DATA
+from ultralytics import RTDETR, YOLO
 
 
 def test_model_forward():
@@ -705,8 +705,9 @@ def test_yoloe(tmp_path):
     model.set_classes(["person", "bus"])
     model(SOURCE, conf=0.01)
 
-    from ultralytics import YOLOE
     from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
+
+    from ultralytics import YOLOE
 
     # visual-prompts
     visuals = dict(
