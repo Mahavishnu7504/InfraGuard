@@ -103,9 +103,9 @@ For additional information about the `convert_coco` function, [visit the referen
 
 ```python
 import cv2
+from ultralytics.utils.plotting import Annotator
 
 from ultralytics import YOLO
-from ultralytics.utils.plotting import Annotator
 
 model = YOLO("yolo26n.pt")  # Load pretrain or fine-tune model
 
@@ -157,7 +157,6 @@ If you have a dataset that uses the [segmentation dataset format](../datasets/se
 
 ```python
 import numpy as np
-
 from ultralytics.utils.ops import segments2boxes
 
 segments = np.array(
@@ -218,7 +217,6 @@ Convert a single polygon (as a list) to a binary mask of the specified image siz
 
 ```python
 import numpy as np
-
 from ultralytics.data.utils import polygon2mask
 
 imgsz = (1080, 810)
@@ -240,7 +238,6 @@ To manage bounding box data, the `Bboxes` class helps convert between box coordi
 
 ```python
 import numpy as np
-
 from ultralytics.utils.instance import Bboxes
 
 boxes = Bboxes(
@@ -285,7 +282,6 @@ When scaling an image up or down, you can appropriately scale corresponding boun
 ```python
 import cv2 as cv
 import numpy as np
-
 from ultralytics.utils.ops import scale_boxes
 
 image = cv.imread("ultralytics/assets/bus.jpg")
@@ -332,7 +328,6 @@ Convert bounding box coordinates from (x1, y1, x2, y2) format to (x, y, width, h
 
 ```python
 import numpy as np
-
 from ultralytics.utils.ops import xyxy2xywh
 
 xyxy_boxes = np.array(
@@ -392,7 +387,6 @@ Ultralytics includes an `Annotator` class for annotating various data types. It'
         ```python
         import cv2 as cv
         import numpy as np
-
         from ultralytics.utils.plotting import Annotator, colors
 
         names = {
@@ -434,7 +428,6 @@ Ultralytics includes an `Annotator` class for annotating various data types. It'
         ```python
         import cv2 as cv
         import numpy as np
-
         from ultralytics.utils.plotting import Annotator, colors
 
         obb_names = {10: "small vehicle"}
@@ -476,10 +469,10 @@ Also see the [`Annotator` Reference Page](../reference/utils/plotting.md/#ultral
     ```python
     import cv2
     import numpy as np
-
-    from ultralytics import YOLO
     from ultralytics.solutions.solutions import SolutionAnnotator
     from ultralytics.utils.plotting import colors
+
+    from ultralytics import YOLO
 
     # User defined video path and model file
     cap = cv2.VideoCapture("path/to/video.mp4")
@@ -589,10 +582,10 @@ Find additional details about the `sweep_annotator` method in our reference sect
 
         ```python
         import cv2
-
-        from ultralytics import YOLO
         from ultralytics.solutions.solutions import SolutionAnnotator
         from ultralytics.utils.plotting import colors
+
+        from ultralytics import YOLO
 
         model = YOLO("yolo26s.pt")
         names = model.names
@@ -628,10 +621,10 @@ Find additional details about the `sweep_annotator` method in our reference sect
 
         ```python
         import cv2
-
-        from ultralytics import YOLO
         from ultralytics.solutions.solutions import SolutionAnnotator
         from ultralytics.utils.plotting import colors
+
+        from ultralytics import YOLO
 
         model = YOLO("yolo26s.pt")
         names = model.names
