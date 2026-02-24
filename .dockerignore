@@ -1,0 +1,26 @@
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+.env/
+
+# Datasets & outputs
+data/
+runs/
+outputs/
+logs/
+
+# Ignore large models EXCEPT required ones
+models/*.pt
+!models/yolov8n.pt
+
+# OS files
+.DS_Store
+Thumbs.db

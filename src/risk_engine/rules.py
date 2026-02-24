@@ -1,15 +1,10 @@
 class RiskEngine:
-    def __init__(self, helmet_required=True, vest_required=True):
-        self.helmet_required = helmet_required
-        self.vest_required = vest_required
+    def __init__(self, required_ppe=None):
+        self.required_ppe = required_ppe or ["helmet", "vest"]
 
     def evaluate(self, detections):
         risks = []
-
-        if self.helmet_required and "helmet" not in detections:
-            risks.append("Helmet Missing")
-
-        if self.vest_required and "vest" not in detections:
-            risks.append("Safety Vest Missing")
-
+        for ppe in self.required_ppe:
+            if ppe not in detections:
+                risks.append(f"{ppe.capitalize()} Missing")
         return risks

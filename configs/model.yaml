@@ -1,0 +1,4 @@
+model:
+  name: yolov8
+  weights_path: models/yolov8n.pt
+  confidence_threshold: 0.5

@@ -1,0 +1,19 @@
+path: /workspaces/InfraGuard/ppe_dataset
+
+train: images/train
+val: images/val
+
+nc: 10
+
+names:
+  0: person
+  1: helmet
+  2: vest
+  3: boots
+  4: gloves
+  5: goggles
+  6: mask
+  7: head
+  8: face
+  9: other
+  
