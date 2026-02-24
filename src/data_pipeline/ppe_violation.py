@@ -1,50 +1,39 @@
-def iou(boxA, boxB):
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
+# src/data_pipeline/ppe_violation.py
 
-    inter = max(0, xB - xA) * max(0, yB - yA)
-    if inter == 0:
-        return 0.0
+CRITICAL_PPE = {"helmet", "vest"}
+IMPORTANT_PPE = {"goggles", "gloves"}
 
-    areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-    areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+def detect_ppe_violations(detections):
+    """
+    detections: list of dicts
+    [
+        {"class": "helmet", "box": [...]},
+        {"class": "vest", "box": [...]}
+    ]
+    """
 
-    return inter / (areaA + areaB - inter)
+    detected = {d["class"] for d in detections}
 
+    missing_critical = CRITICAL_PPE - detected
+    missing_important = IMPORTANT_PPE - detected
 
-def detect_ppe_violations(detections, iou_threshold=0.2):
-    persons, helmets, vests = [], [], []
+    violations = []
 
-    for d in detections:
-        if d["class"] == "person":
-            persons.append(d["box"])
-        elif d["class"] == "helmet":
-            helmets.append(d["box"])
-        elif d["class"] == "vest":
-            vests.append(d["box"])
+    if missing_critical:
+        risk = "HIGH"
+        violations.append(
+            f"Missing critical PPE: {', '.join(missing_critical)}"
+        )
+    elif missing_important:
+        risk = "MEDIUM"
+        violations.append(
+            f"Missing important PPE: {', '.join(missing_important)}"
+        )
+    else:
+        risk = "LOW"
+        violations.append("All required PPE detected")
 
-    results = []
-
-    for idx, p in enumerate(persons):
-        has_helmet = any(iou(p, h) > iou_threshold for h in helmets)
-        has_vest = any(iou(p, v) > iou_threshold for v in vests)
-
-        if not has_helmet and not has_vest:
-            risk = "HIGH"
-        elif not has_helmet:
-            risk = "HIGH"
-        elif not has_vest:
-            risk = "MEDIUM"
-        else:
-            risk = "LOW"
-
-        results.append({
-            "person_id": idx,
-            "helmet": has_helmet,
-            "vest": has_vest,
-            "risk": risk
-        })
-
-    return results
+    return {
+        "risk": risk,
+        "violations": violations
+    }

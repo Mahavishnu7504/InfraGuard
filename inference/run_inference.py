@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from src.inference.predictor import YOLOPredictor
 from src.data_pipeline.ppe_violation import detect_ppe_violations
@@ -7,13 +8,15 @@ MODEL_PATH = "runs/detect/infra_ppe_cpu_safe/weights/best.pt"
 SOURCE_DIR = "inference/test_images"
 OUTPUT_DIR = "inference/outputs"
 RUN_NAME = "ppe_results"
+JSON_DIR = Path("inference/outputs/json")
 # ----------------------------------------
 
 print("🚀 InfraGuard inference started")
 print(f"📂 Reading images from: {SOURCE_DIR}")
 
-# Ensure output directory exists
+# Ensure output directories exist
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+JSON_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load predictor
 predictor = YOLOPredictor(
@@ -48,10 +51,28 @@ for r in results:
             "box": box.xyxy[0].tolist()
         })
 
-    violations = detect_ppe_violations(detections)
+    # 🔹 PPE violation analysis
+    violation_result = detect_ppe_violations(detections)
 
-    print(f"\n📷 Image: {r.path}")
-    for v in violations:
-        print(v)
+    image_name = Path(r.path).name
+
+    output_json = {
+        "image": image_name,
+        "risk": violation_result["risk"],
+        "violations": violation_result["violations"],
+        "detections": detections
+    }
+
+    json_path = JSON_DIR / f"{image_name}.json"
+    with open(json_path, "w") as f:
+        json.dump(output_json, f, indent=2)
+
+    # Console output
+    print(f"\n📷 Image: {image_name}")
+    print(f"🚨 Risk Level: {violation_result['risk']}")
+    for v in violation_result["violations"]:
+        print("⚠️", v)
+
+    print(f"🧾 JSON saved: {json_path}")
 
 print("✅ Inference completed")
