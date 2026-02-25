@@ -10,3 +10,6 @@ ppe_dataset/labels/*
 # Inference outputs
 inference/outputs/
 runs/
+
+# Test & sample images
+inference/test_images/
