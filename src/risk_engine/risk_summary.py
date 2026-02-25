@@ -5,6 +5,8 @@ from collections import Counter
 JSON_DIR = Path("inference/outputs/json")
 OUTPUT_FILE = Path("inference/outputs/risk_summary.json")
 
+RISK_ORDER = ["LOW", "MEDIUM", "HIGH"]
+
 def generate_risk_summary():
     risk_counter = Counter()
     total_images = 0
@@ -18,17 +20,16 @@ def generate_risk_summary():
         total_images += 1
 
     if total_images == 0:
-        raise RuntimeError("No JSON files found for risk summary")
+        raise RuntimeError("No inference JSON files found")
 
-    compliance_score = (
-        (risk_counter["LOW"] / total_images) * 100
-        if total_images > 0 else 0
+    compliance_score = round(
+        (risk_counter["LOW"] / total_images) * 100, 2
     )
 
     summary = {
         "total_images": total_images,
         "risk_breakdown": dict(risk_counter),
-        "compliance_score_percent": round(compliance_score, 2)
+        "compliance_score_percent": compliance_score
     }
 
     with open(OUTPUT_FILE, "w") as f:
