@@ -6,3 +6,7 @@ ppe_dataset_raw.zip
 # Local datasets (optional)
 ppe_dataset/images/*
 ppe_dataset/labels/*
+
+# Inference outputs
+inference/outputs/
+runs/
