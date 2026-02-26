@@ -5,12 +5,13 @@ from src.utils.config_loader import load_config
 
 
 def main():
+    # Load training configuration
     cfg = load_config("configs/training.yaml")
 
-    # Load base YOLO weights
+    # Load base YOLOv8 weights
     model = YOLO(cfg["model"]["base_weights"])
 
-    # Train
+    # Start training
     model.train(
         data=cfg["data"]["dataset_yaml"],
         epochs=cfg["training"]["epochs"],
@@ -18,7 +19,10 @@ def main():
         batch=cfg["training"]["batch"],
         device=cfg["training"]["device"],
         project=cfg["training"]["project"],
-        name=cfg["training"]["name"]
+        name=cfg["training"]["name"],
+        workers=cfg["training"].get("workers", 0),
+        cache=False,          # avoids RAM pressure
+        verbose=True
     )
 
 
