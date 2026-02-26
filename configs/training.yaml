@@ -7,9 +7,9 @@ data:
   dataset_yaml: ppe_dataset/data.yaml
 
 training:
-  epochs: 60
+  epochs: 50
   imgsz: 512          # ↓ safer than 640 for CPU
-  batch: 2            # ↓ CRITICAL: prevents OOM kill
+  batch: 8      # ↓ CRITICAL: prevents OOM kill
   device: cpu
   project: runs/detect
   name: infra_ppe_v1_retrain_cpu_safe
