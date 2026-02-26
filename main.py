@@ -1,5 +1,5 @@
 from src.utils.config_loader import load_config
-from src.inference.predictor import Predictor
+from src.inference.predictor import YOLOPredictor
 from src.risk_engine.rules import RiskEngine
 import os
 

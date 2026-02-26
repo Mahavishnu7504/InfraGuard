@@ -11,5 +11,8 @@
   "settings": {
     "terminal.integrated.defaultProfile.linux": "bash"
   },
+  "containerEnv": {
+    "PYTHONPATH": "/workspaces/InfraGuard"
+  },
   "remoteUser": "root"
 }

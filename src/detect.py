@@ -1,3 +1,5 @@
+# Deprecated: logic moved to src/inference/predictor.py
+
 import cv2
 from ultralytics import YOLO
 import os
