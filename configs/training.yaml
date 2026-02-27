@@ -2,7 +2,7 @@
 
 
 model:
-  base_weights: models/yolov8n.pt
+  base_weights: models/yolov8s.pt
 
 data:
   dataset_yaml: ppe_dataset/data.yaml
@@ -10,7 +10,7 @@ data:
 training:
   epochs: 50
   imgsz: 512              # CPU-safe image size
-  batch: 8                # Safe for low-memory CPU
+  batch: 6               # Safe for low-memory CPU
   device: cpu             # cpu | cuda
   project: runs/detect
   name: infra_ppe_v1_cpu_safe
