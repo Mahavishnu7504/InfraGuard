@@ -28,3 +28,8 @@
 2026-02-27 05:28:05,661 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
 2026-02-27 05:28:05,677 | INFO | InfraGuardSystem | InfraGuard system initialized successfully
 2026-02-27 05:28:06,024 | INFO | RiskEngine | Risk report generated: {'total_persons': 1, 'violations': [{'person_id': 0, 'helmet': 'MISSING', 'vest': 'MISSING'}], 'severity': 'HIGH'}
+2026-02-27 06:07:03,554 | INFO | Training | Starting InfraGuard Training
+2026-02-27 06:07:03,558 | INFO | Training | Base weights: models/yolov8s.pt
+2026-02-27 06:07:03,560 | INFO | Training | Dataset: ppe_dataset/data.yaml
+2026-02-27 06:07:03,561 | INFO | Training | Epochs: 50, Batch: 6, Img Size: 512
+2026-02-27 06:07:03,563 | INFO | Training | Device: cpu
