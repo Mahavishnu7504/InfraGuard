@@ -1,5 +1,5 @@
 # InfraGuard Training Configuration
-
+# Stable CPU Production Setup - YOLOv8n (Clean Restart)
 
 model:
   base_weights: models/yolov8n.pt
@@ -8,11 +8,11 @@ data:
   dataset_yaml: ppe_dataset/data.yaml
 
 training:
-  epochs: 50
-  imgsz: 512              # CPU-safe image size
-  batch: 6               # Safe for low-memory CPU
-  device: cpu             # cpu | cuda
-  project: runs/detect
-  name: infra_ppe_v1_cpu_safe
-  workers: 0              # Avoid RAM spikes
-  resume: false           # Enable only when resuming interrupted training
+  epochs: 30
+  imgsz: 416
+  batch: 6
+  device: cpu
+  project: runs/detect        # ✅ Correct path
+  name: infra_ppe_v1_cpu_clean
+  workers: 0
+  resume: false
