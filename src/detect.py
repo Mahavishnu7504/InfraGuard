@@ -1,43 +1,21 @@
-# Deprecated: logic moved to src/inference/predictor.py
-
-import cv2
-from ultralytics import YOLO
-import os
-
-MODEL_PATH = "../models/yolov8n.pt"
-OUTPUT_PATH = "../outputs/output.jpg"
-
-def run_detection():
-
-    model = YOLO(MODEL_PATH)
-
-    cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        print("Error opening camera")
-        return
-
-    while True:
-
-        ret, frame = cap.read()
-
-        if not ret:
-            break
-
-        results = model(frame)
-
-        annotated = results[0].plot()
-
-        cv2.imshow("InfraGuard Detection", annotated)
-
-        key = cv2.waitKey(1)
-
-        if key == 27:
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+from src.inference.predictor import Predictor
+from src.risk_engine.rules import RiskEngine
+from src.utils.config_loader import ConfigLoader
 
 
-if __name__ == "__main__":
-    run_detection()
+class InfraGuardSystem:
+    def __init__(self, config_path="configs/model.yaml"):
+        config = ConfigLoader(config_path)
+        model_path = config.get("model.path")
+
+        self.predictor = Predictor(model_path)
+        self.risk_engine = RiskEngine()
+
+    def process_frame(self, frame):
+        detections = self.predictor.predict(frame)
+        risk_report = self.risk_engine.evaluate(detections)
+
+        return {
+            "detections": detections,
+            "risk_report": risk_report
+        }

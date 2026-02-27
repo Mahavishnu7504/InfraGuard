@@ -1,0 +1,9 @@
+2026-02-27 05:01:18,959 | INFO | Predictor | Model loaded from: models/yolov8n.pt
+2026-02-27 05:01:18,962 | INFO | Predictor | Device: cpu
+2026-02-27 05:01:18,964 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
+2026-02-27 05:01:24,187 | INFO | Predictor | Model loaded from: models/yolov8n.pt
+2026-02-27 05:01:24,190 | INFO | Predictor | Device: cpu
+2026-02-27 05:01:24,192 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
+2026-02-27 05:02:06,869 | INFO | Predictor | Model loaded from: models/yolov8n.pt
+2026-02-27 05:02:06,871 | INFO | Predictor | Device: cpu
+2026-02-27 05:02:06,874 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100

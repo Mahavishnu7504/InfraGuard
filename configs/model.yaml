@@ -1,4 +1,22 @@
+# InfraGuard Model Configuration
+# Industry Standard - Production Ready
+
 model:
   name: yolov8
-  weights_path: models/yolov8n.pt
-  confidence_threshold: 0.5
+  version: v1_cpu_baseline
+
+  paths:
+    weights: models/yolov8n.pt
+
+  device:
+    type: cpu        # cpu | cuda
+    half_precision: false
+
+inference:
+  confidence_threshold: 0.4
+  iou_threshold: 0.5
+  image_size: 512
+  max_detections: 100
+
+logging:
+  level: INFO
