@@ -4,12 +4,16 @@
     "dockerfile": "../docker/Dockerfile",
     "context": ".."
   },
-  "extensions": [
-    "ms-python.python",
-    "ms-azuretools.vscode-docker"
-  ],
-  "settings": {
-    "terminal.integrated.defaultProfile.linux": "bash"
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
   },
   "containerEnv": {
     "PYTHONPATH": "/workspaces/InfraGuard"
