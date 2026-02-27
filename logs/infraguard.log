@@ -7,3 +7,8 @@
 2026-02-27 05:02:06,869 | INFO | Predictor | Model loaded from: models/yolov8n.pt
 2026-02-27 05:02:06,871 | INFO | Predictor | Device: cpu
 2026-02-27 05:02:06,874 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
+2026-02-27 05:04:25,174 | INFO | RiskEngine | Risk report generated: {'total_persons': 1, 'violations': [{'person_id': 0, 'helmet': 'MISSING', 'vest': 'MISSING'}], 'severity': 'HIGH'}
+2026-02-27 05:07:08,409 | INFO | Predictor | Model loaded from: models/yolov8n.pt
+2026-02-27 05:07:08,411 | INFO | Predictor | Device: cpu
+2026-02-27 05:07:08,414 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
+2026-02-27 05:07:08,416 | INFO | InfraGuardSystem | InfraGuard system initialized successfully
