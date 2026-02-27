@@ -12,3 +12,19 @@
 2026-02-27 05:07:08,411 | INFO | Predictor | Device: cpu
 2026-02-27 05:07:08,414 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
 2026-02-27 05:07:08,416 | INFO | InfraGuardSystem | InfraGuard system initialized successfully
+2026-02-27 05:11:52,963 | INFO | Predictor | Model loaded from: models/yolov8n.pt
+2026-02-27 05:11:52,966 | INFO | Predictor | Device: cpu
+2026-02-27 05:11:52,967 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
+2026-02-27 05:11:52,998 | INFO | InfraGuardSystem | InfraGuard system initialized successfully
+2026-02-27 05:11:54,091 | INFO | RiskEngine | Risk report generated: {'total_persons': 1, 'violations': [{'person_id': 0, 'helmet': 'MISSING', 'vest': 'MISSING'}], 'severity': 'HIGH'}
+2026-02-27 05:19:11,921 | INFO | Predictor | Model loaded from: models/yolov8n.pt
+2026-02-27 05:19:11,924 | INFO | Predictor | Device: cpu
+2026-02-27 05:19:11,926 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
+2026-02-27 05:19:11,958 | INFO | InfraGuardSystem | InfraGuard system initialized successfully
+2026-02-27 05:19:12,358 | INFO | RiskEngine | Risk report generated: {'total_persons': 1, 'violations': [{'person_id': 0, 'helmet': 'MISSING', 'vest': 'MISSING'}], 'severity': 'HIGH'}
+2026-02-27 05:19:48,596 | INFO | RiskEngine | Risk report generated: {'total_persons': 1, 'violations': [{'person_id': 0, 'helmet': 'MISSING', 'vest': 'MISSING'}], 'severity': 'HIGH'}
+2026-02-27 05:28:05,657 | INFO | Predictor | Model loaded from: models/yolov8n.pt
+2026-02-27 05:28:05,659 | INFO | Predictor | Device: cpu
+2026-02-27 05:28:05,661 | INFO | Predictor | Inference settings -> conf: 0.4, iou: 0.5, max_det: 100
+2026-02-27 05:28:05,677 | INFO | InfraGuardSystem | InfraGuard system initialized successfully
+2026-02-27 05:28:06,024 | INFO | RiskEngine | Risk report generated: {'total_persons': 1, 'violations': [{'person_id': 0, 'helmet': 'MISSING', 'vest': 'MISSING'}], 'severity': 'HIGH'}

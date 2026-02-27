@@ -1,4 +1,5 @@
-# configs/training.yaml
+# InfraGuard Training Configuration
+
 
 model:
   base_weights: models/yolov8n.pt
@@ -8,9 +9,10 @@ data:
 
 training:
   epochs: 50
-  imgsz: 512          # ↓ safer than 640 for CPU
-  batch: 8      # ↓ CRITICAL: prevents OOM kill
-  device: cpu
+  imgsz: 512              # CPU-safe image size
+  batch: 8                # Safe for low-memory CPU
+  device: cpu             # cpu | cuda
   project: runs/detect
-  name: infra_ppe_v1_retrain_cpu_safe
-  workers: 0          # ↓ avoids dataloader memory spikes
+  name: infra_ppe_v1_cpu_safe
+  workers: 0              # Avoid RAM spikes
+  resume: false           # Enable only when resuming interrupted training
