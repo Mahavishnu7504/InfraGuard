@@ -1,5 +1,5 @@
 # InfraGuard Training Configuration
-
+# Safe CPU Setup - YOLOv8s
 
 model:
   base_weights: models/yolov8s.pt
@@ -9,10 +9,10 @@ data:
 
 training:
   epochs: 50
-  imgsz: 512              # CPU-safe image size
-  batch: 6               # Safe for low-memory CPU
-  device: cpu             # cpu | cuda
-  project: runs/detect
-  name: infra_ppe_v1_cpu_safe
-  workers: 0              # Avoid RAM spikes
-  resume: false           # Enable only when resuming interrupted training
+  imgsz: 416              # Reduced from 512 (big RAM saver)
+  batch: 4                # Reduced from 6 (critical fix)
+  device: cpu
+  project: runs           # FIXED (not runs/detect)
+  name: infra_ppe_v2_yolov8s_cpu
+  workers: 0
+  resume: false
