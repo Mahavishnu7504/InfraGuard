@@ -48,3 +48,8 @@
 2026-02-27 06:53:30,006 | INFO | Training | Dataset: ppe_dataset/data.yaml
 2026-02-27 06:53:30,007 | INFO | Training | Epochs: 30, Batch: 6, Img Size: 416
 2026-02-27 06:53:30,009 | INFO | Training | Device: cpu
+2026-03-02 05:49:20,637 | INFO | Training | Starting InfraGuard Training
+2026-03-02 05:49:20,639 | INFO | Training | Base weights: models/yolo11n.pt
+2026-03-02 05:49:20,641 | INFO | Training | Dataset: ppe_dataset/data.yaml
+2026-03-02 05:49:20,642 | INFO | Training | Epochs: 30, Batch: 6, Img Size: 416
+2026-03-02 05:49:20,643 | INFO | Training | Device: cpu
