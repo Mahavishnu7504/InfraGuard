@@ -1,5 +1,5 @@
 # InfraGuard Training Configuration
-# Stable CPU Production Setup - YOLOv11n Upgrade
+# Stable CPU Production Setup - YOLO11n Upgrade
 
 model:
   base_weights: models/yolo11n.pt
