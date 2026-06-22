@@ -1,0 +1,10 @@
+model:
+  version: "yolov8n.pt"
+  paths:
+    weights: "models/infraguard.pt"
+
+inference:
+  confidence_threshold: 0.35
+
+site:
+  type: "construction"

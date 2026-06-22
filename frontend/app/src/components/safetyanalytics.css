@@ -1,0 +1,89 @@
+/* ── SAFETY ANALYTICS ───────────────────────────────────── */
+
+.analytics-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.analytics-empty {
+  padding: 22px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.07);
+  color: #64748b;
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+/* 2-col chart grid */
+.analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+/* Glass chart card */
+.analytics-card {
+  background: rgba(6, 14, 30, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 22px;
+  padding: 22px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.24s ease, border-color 0.24s ease;
+}
+
+.analytics-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(59, 130, 246, 0.18);
+}
+
+/* ambient corner glow */
+.analytics-card::before {
+  content: "";
+  position: absolute;
+  top: -50px;
+  left: -30px;
+  width: 160px;
+  height: 160px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.1), transparent 70%);
+  pointer-events: none;
+}
+
+.analytics-title {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #f0f6ff;
+  margin-bottom: 16px;
+  letter-spacing: 0.01em;
+}
+
+.full-width {
+  width: 100%;
+}
+
+/* Live badge */
+.live-badge {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.1);
+  color: #93c5fd;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+}
+
+@media (max-width: 900px) {
+  .analytics-grid {
+    grid-template-columns: 1fr;
+  }
+}

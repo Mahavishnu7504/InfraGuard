@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# Node
+node_modules/
+
+# Build
+dist/
+build/
+
+# YOLO
+runs/
+wandb/
+outputs/
+logs/
+
+# Dataset
+datasets/
+data/
+
+# Model Weights
+*.pt
+*.onnx
+*.engine
+*.weights
+
+# Generated Uploads
+backend/uploads/
+media/annotated_evidence/
+
+# Reports
+*.pdf
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

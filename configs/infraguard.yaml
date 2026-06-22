@@ -1,0 +1,15 @@
+path: datasets/infraguard_detection
+
+train: train/images
+val: val/images
+test: test/images
+
+names:
+  0: person
+  1: helmet
+  2: vest
+  3: goggles
+  4: gloves
+  5: boots
+  6: crack
+  7: heavy_machine

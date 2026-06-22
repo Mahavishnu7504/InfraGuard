@@ -1,0 +1,16 @@
+app:
+  name: InfraGuard
+  version: 1.0
+
+paths:
+  model: models/infraguard.pt
+  output: outputs/
+  logs: logs/
+
+inference:
+  conf_threshold: 0.4
+  iou_threshold: 0.5
+
+camera:
+  device: 0
+  fps: 20

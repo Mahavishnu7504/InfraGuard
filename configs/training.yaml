@@ -1,0 +1,15 @@
+training:
+  model: yolov8n.pt
+  epochs: 50
+  batch: 12
+  imgsz: 512
+  workers: 2
+  device: cpu
+  patience: 20
+  
+
+dataset:
+  config: configs/infraguard.yaml
+
+output:
+  directory: runs

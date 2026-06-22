@@ -1,0 +1,112 @@
+/* ── LIVE ALERTS ────────────────────────────────────────── */
+
+.alert-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.no-alerts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: rgba(34, 197, 94, 0.06);
+  border: 1px solid rgba(34, 197, 94, 0.14);
+  color: #86efac;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+/* Card */
+.alert-card {
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: rgba(6, 14, 30, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-left: 3px solid var(--ac-color, rgba(255, 255, 255, 0.1));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.alert-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+}
+
+.alert-card.high {
+  --ac-color: #ef4444;
+}
+
+.alert-card.medium {
+  --ac-color: #f59e0b;
+}
+
+.alert-card.low {
+  --ac-color: #22c55e;
+}
+
+/* Header */
+.alert-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.alert-header>span:first-child {
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: #e2e8f0;
+}
+
+/* Badge */
+.alert-risk-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+}
+
+.alert-risk-badge.high {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.alert-risk-badge.medium {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.alert-risk-badge.low {
+  background: rgba(34, 197, 94, 0.10);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.18);
+}
+
+/* Body */
+.alert-body {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  line-height: 1.7;
+}
+
+/* Time */
+.alert-time {
+  font-size: 0.7rem;
+  color: #475569;
+  font-family: "Share Tech Mono", monospace;
+  letter-spacing: 0.05em;
+}

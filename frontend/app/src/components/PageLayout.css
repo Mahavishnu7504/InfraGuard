@@ -1,0 +1,142 @@
+/* ═══════════════════════════════════════════════════════════
+   INFRAGUARD — PAGE LAYOUT SHELL
+═══════════════════════════════════════════════════════════ */
+
+:root {
+    --bg0: #010509;
+    --bg1: #060d16;
+    --bg2: #0a1420;
+    --border: rgba(255, 255, 255, 0.055);
+    --border-hi: rgba(0, 200, 255, 0.22);
+    --tx0: #e8f4ff;
+    --tx1: #8ca8c8;
+    --tx2: #4a6880;
+    --g: #00ff9d;
+    --b: #00c8ff;
+    --mono: "Share Tech Mono", monospace;
+    --sans: "Barlow Condensed", sans-serif;
+    --r-md: 12px;
+    --r-lg: 20px;
+}
+
+.app-shell *,
+.app-shell *::before,
+.app-shell *::after {
+    box-sizing: border-box;
+}
+
+.app-shell {
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    background: var(--bg0);
+    color: var(--tx0);
+    font-family: var(--sans);
+}
+
+/* ── MAIN ──────────────────────────────────────────── */
+.main-layout {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+
+/* ambient grid + glow shared with page-level styles */
+.main-layout::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(0, 200, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 200, 255, 0.02) 1px, transparent 1px);
+    background-size: 52px 52px;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.page-wrapper {
+    flex: 1;
+    width: 100%;
+    padding: 28px 28px 40px;
+    position: relative;
+    z-index: 1;
+}
+
+.page-container {
+    width: 100%;
+    max-width: 1320px;
+    margin: 0 auto;
+}
+
+.page-body {
+    width: 100%;
+}
+
+/* ── PAGE HEADER ───────────────────────────────────── */
+.minimal-page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+    margin-bottom: 28px;
+    flex-wrap: wrap;
+}
+
+.minimal-page-header-left {
+    flex: 1;
+    min-width: 280px;
+}
+
+.minimal-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    padding: 7px 14px;
+    border-radius: 999px;
+    background: rgba(0, 200, 255, 0.08);
+    border: 1px solid rgba(0, 200, 255, 0.18);
+    color: var(--b);
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+
+.minimal-page-title {
+    margin: 14px 0 0;
+    font-family: var(--sans);
+    font-size: clamp(1.8rem, 3.5vw, 2.8rem);
+    font-weight: 900;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--tx0);
+}
+
+.minimal-page-subtitle {
+    margin-top: 10px;
+    max-width: 700px;
+    font-family: var(--mono);
+    color: var(--tx2);
+    line-height: 1.8;
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+}
+
+.minimal-page-right {
+    flex-shrink: 0;
+}
+
+/* ── RESPONSIVE ────────────────────────────────────── */
+@media (max-width: 1100px) {
+    .app-shell {
+        flex-direction: column;
+    }
+
+    .page-wrapper {
+        padding: 20px 16px 30px;
+    }
+}

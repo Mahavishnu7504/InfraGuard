@@ -1,0 +1,10 @@
+server:
+  host: 0.0.0.0
+  port: 8000
+
+performance:
+  device: cpu
+  workers: 2
+
+monitoring:
+  enable_logging: true

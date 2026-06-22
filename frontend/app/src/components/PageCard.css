@@ -1,0 +1,81 @@
+/* ═══════════════════════════════════════════════════════════
+   INFRAGUARD — PAGE CARD (generic surface)
+═══════════════════════════════════════════════════════════ */
+
+:root {
+    --bg1: #060d16;
+    --border: rgba(255, 255, 255, 0.055);
+    --border-hi: rgba(0, 200, 255, 0.22);
+    --tx0: #e8f4ff;
+    --tx2: #4a6880;
+    --b: #00c8ff;
+    --mono: "Share Tech Mono", monospace;
+    --sans: "Barlow Condensed", sans-serif;
+    --r-xl: 28px;
+}
+
+.minimal-card *,
+.minimal-card *::before,
+.minimal-card *::after {
+    box-sizing: border-box;
+}
+
+.minimal-card {
+    width: 100%;
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xl);
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.22s ease, border-color 0.22s ease;
+}
+
+/* top accent line, consistent with all panels in the platform */
+.minimal-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--b), transparent);
+    opacity: 0.6;
+}
+
+.minimal-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--border-hi);
+}
+
+.minimal-card-header {
+    padding: 24px 24px 0;
+}
+
+.minimal-card-header h3 {
+    font-family: var(--sans);
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: var(--tx0);
+    margin: 0;
+}
+
+.minimal-card-header p {
+    margin-top: 8px;
+    font-family: var(--mono);
+    color: var(--tx2);
+    line-height: 1.8;
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+}
+
+.minimal-card-body {
+    padding: 24px;
+}
+
+@media (max-width: 768px) {
+
+    .minimal-card-header,
+    .minimal-card-body {
+        padding: 20px;
+    }
+}
