@@ -35,6 +35,10 @@ data/
 *.engine
 *.weights
 
+# Generated images
+generated/
+backend/static/quality_outputs/
+
 # Generated Uploads
 backend/uploads/
 media/annotated_evidence/
