@@ -9,6 +9,46 @@ RISK_CATEGORY_MAPPING = {
     "low": "C",
 }
 
+
+DEPARTMENT_MAPPING = {
+
+    "surface_crack": "Civil Engineering",
+
+    "corrosion": "Maintenance",
+
+    "water_leakage": "Civil Engineering",
+
+    "rebar_exposure": "Construction Quality",
+
+    "material_damage": "Construction Quality",
+
+    "poor_housekeeping": "Site Operations",
+
+    "ppe_non_compliance": "Safety Department",
+}
+
+CLOSURE_TIMELINE = {
+
+    "critical": "Immediate (0-24 Hours)",
+
+    "high": "7 Days",
+
+    "medium": "30 Days",
+
+    "low": "Next Inspection Cycle",
+}
+
+AUDIT_PRIORITY = {
+
+    "critical": "Immediate Escalation",
+
+    "high": "Management Review",
+
+    "medium": "Supervisor Review",
+
+    "low": "Routine Monitoring",
+}
+
 CONSEQUENCE_LIBRARY = {
 
     "surface_crack": [
@@ -1206,6 +1246,37 @@ def _resolve_field(value, severity_key):
     )
 
 
+def _resolve_confidence_note(confidence):
+    """
+    Translate an AI detection confidence score into a
+    human-readable note for reporting.
+
+    A confidence of exactly 0.0 is treated as "no confidence
+    score was supplied" rather than "confidence was measured
+    as low" -- callers that don't pass a confidence value
+    should not be told their detection is low-confidence.
+    """
+    if confidence <= 0.0:
+        return (
+            "No AI confidence score was provided for this finding. "
+            "Manual verification recommended."
+        )
+
+    if confidence < 0.55:
+        return (
+            "AI confidence is moderate. "
+            "Manual verification recommended."
+        )
+
+    if confidence < 0.75:
+        return (
+            "AI confidence is good. "
+            "Visual verification advised."
+        )
+
+    return "AI confidence is high."
+
+
 # =========================================================
 # PUBLIC ACCESS
 # =========================================================
@@ -1235,7 +1306,8 @@ def get_guidelines(
         observation, root_cause, risk, corrective_action,
         preventive_action, best_practice,
         guideline_reference, potential_consequences,
-        management_impact, risk_category
+        management_impact, risk_category, department,
+        target_closure_date, audit_priority, confidence_note
     """
 
     template    = GUIDELINES.get(issue_type, DEFAULT_GUIDELINE)
@@ -1268,4 +1340,24 @@ def get_guidelines(
             severity_key,
             "C",
         ),
+
+        # ---- Upgrade additions (department / timeline / audit / confidence) ----
+        "department": DEPARTMENT_MAPPING.get(
+            issue_type,
+            "Site Management",
+        ),
+
+        "target_closure_date": CLOSURE_TIMELINE.get(
+            severity_key,
+            "30 Days",
+        ),
+
+        "audit_priority": AUDIT_PRIORITY.get(
+            severity_key,
+            "Routine Monitoring",
+        ),
+
+        "confidence_note": _resolve_confidence_note(confidence),
+
+        
     }

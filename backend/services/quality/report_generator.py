@@ -664,6 +664,50 @@ def inspection_status(severity: str) -> str:
 
 
 # =========================================================
+# RESPONSIBLE TEAM  (issue-type stratified, frontend Phase 6/4)
+# =========================================================
+_RESPONSIBLE_TEAM_MAP: dict = {
+    "surface_crack":      "Structural Engineer",
+    "corrosion":          "Structural Engineer",
+    "water_leakage":      "Civil Engineer",
+    "rebar_exposure":     "Structural Engineer",
+    "material_damage":    "Site Supervisor",
+    "poor_housekeeping":  "Site Supervisor",
+    "ppe_non_compliance": "Site Safety Officer",
+}
+
+_DEFAULT_RESPONSIBLE_TEAM = "Site Engineer"
+
+
+def responsible_team(issue_type: str) -> str:
+    """
+    Maps an issue_type to the engineering/site role accountable for
+    resolving it. Drives the "Responsible Team" / "Owner" columns
+    consumed by GenerateReport.jsx (Phase 4 Corrective Action Matrix
+    and Phase 6 Findings Intelligence).
+    """
+    return _RESPONSIBLE_TEAM_MAP.get(issue_type, _DEFAULT_RESPONSIBLE_TEAM)
+
+
+# =========================================================
+# TARGET RESOLUTION  (severity-stratified, frontend Phase 6)
+# =========================================================
+_TARGET_RESOLUTION: dict = {
+    "critical": "Within 24 Hours",
+    "high":     "Within 3 Days",
+    "medium":   "Within 14 Days",
+    "low":      "Within 30 Days",
+}
+
+
+def target_resolution(severity: str) -> str:
+    severity_key = severity.lower()
+    if severity_key not in _TARGET_RESOLUTION:
+        severity_key = "medium"
+    return _TARGET_RESOLUTION[severity_key]
+
+
+# =========================================================
 # SINGLE-IMAGE FINDING BUILDER
 # =========================================================
 def build_finding(item: dict, total_findings: int = 1) -> dict:
@@ -715,6 +759,15 @@ def build_finding(item: dict, total_findings: int = 1) -> dict:
         "bbox":                bbox,
         # AI metadata
         "ai_metadata":         build_ai_metadata(confidence),
+        # ── Frontend Phase 4 / 6 fields (GenerateReport.jsx) ──
+        # risk_impact / owner / action are aliases of existing fields,
+        # kept under both names so the frontend's preferred key always
+        # resolves without requiring a frontend change.
+        "risk_impact":         operational_impact(issue_type, severity),
+        "responsible_team":    responsible_team(issue_type),
+        "owner":               responsible_team(issue_type),
+        "target_resolution":   target_resolution(severity),
+        "action":              guideline["corrective_action"],
     }
 
 
@@ -1008,6 +1061,83 @@ def build_audit_exposure_summary(image_reports: list, overall_score: int) -> str
         f"existing preventive maintenance and inspection practices should "
         f"sustain favourable outcomes during external quality and HSE audits."
     )
+
+
+# =========================================================
+# COMPLIANCE BENCHMARK  (frontend Phase 7)
+# =========================================================
+def compliance_benchmark(score: int) -> str:
+    """
+    Maps the overall compliance score onto a three-tier enterprise
+    benchmark label consumed by the Compliance Benchmark Panel.
+    """
+    if score >= 90:
+        return "Enterprise Grade"
+    if score >= 65:
+        return "Industry Acceptable"
+    return "Below Standard"
+
+
+# =========================================================
+# AUDIT STATUS  (frontend Phase 7 — short categorical companion
+# to the existing free-text `audit_readiness` narrative)
+# =========================================================
+def audit_status(score: int, critical_count: int) -> str:
+    if critical_count > 0:
+        return "Not Audit Ready"
+    if score >= 85:
+        return "Audit Ready"
+    if score >= 65:
+        return "Conditionally Audit Ready"
+    return "Not Audit Ready"
+
+
+# =========================================================
+# OPERATIONAL STATUS  (frontend Phase 7)
+# =========================================================
+def operational_status(overall_risk: str) -> str:
+    mapping = {
+        "Critical": "Halted",
+        "High":     "Restricted",
+        "Medium":   "Stable — Monitoring Required",
+        "Low":      "Stable",
+    }
+    return mapping.get(overall_risk, "Stable")
+
+
+# =========================================================
+# AI CONFIDENCE ANALYTICS  (frontend Phase 8)
+# =========================================================
+def analytics_summary(image_reports: list) -> dict:
+    """
+    Aggregates per-finding confidence across every image into the
+    summary figures consumed by the AI Confidence Analytics panel:
+        average_confidence        — mean confidence, as a whole-number %
+        high_confidence_findings  — count with confidence >= 0.80
+        review_required_findings  — count with confidence <  0.60
+    """
+    confidences = [
+        f["confidence"]
+        for img in image_reports
+        for f in img["findings"]
+    ]
+
+    if not confidences:
+        return {
+            "average_confidence":       0,
+            "high_confidence_findings": 0,
+            "review_required_findings": 0,
+        }
+
+    average_pct = round((sum(confidences) / len(confidences)) * 100)
+    high_count   = sum(1 for c in confidences if c >= 0.80)
+    review_count = sum(1 for c in confidences if c < 0.60)
+
+    return {
+        "average_confidence":       average_pct,
+        "high_confidence_findings": high_count,
+        "review_required_findings": review_count,
+    }
 
 
 # =========================================================
@@ -1553,6 +1683,14 @@ def generate_multi_image_report(
     else:
         follow_up = "Routine follow-up inspection within 90 days."
 
+    # ── Frontend Phase 7 fields (GenerateReport.jsx) ───────
+    benchmark      = compliance_benchmark(overall_score)
+    audit_status_  = audit_status(overall_score, critical_total)
+    op_status       = operational_status(overall_risk)
+
+    # ── Frontend Phase 8 field — AI confidence analytics ───
+    analytics = analytics_summary(image_reports)
+
     return {
         # ── Cover / Identity ──────────────────────────────
         "inspection_id":          inspection_id,
@@ -1583,6 +1721,11 @@ def generate_multi_image_report(
 
         # ── Per-Image Sections ────────────────────────────
         "image_reports":          image_reports,
+        # Alias: GenerateReport.jsx reads data.images[] — keeping both
+        # keys means neither side has to be the one that adapts.
+        "images":                 image_reports,
+        # Alias: GenerateReport.jsx reads data.total_images_processed.
+        "total_images_processed": len(image_reports),
 
         # ── Aggregated Recommendations ────────────────────
         "overall_recommendations": overall_recs,
@@ -1597,6 +1740,15 @@ def generate_multi_image_report(
         # ── Compliance Summary ────────────────────────────
         "audit_readiness":        audit_readiness,
         "follow_up_action":       follow_up,
+
+        # ── Frontend Phase 7 — Compliance Benchmark Panel ──
+        "compliance_benchmark":   benchmark,
+        "benchmark":              benchmark,
+        "audit_status":           audit_status_,
+        "operational_status":     op_status,
+
+        # ── Frontend Phase 8 — AI Confidence Analytics ─────
+        "analytics":              analytics,
 
         # ── Conclusion ────────────────────────────────────
         "conclusion":             conclusion,

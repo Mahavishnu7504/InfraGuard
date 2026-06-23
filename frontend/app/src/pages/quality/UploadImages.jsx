@@ -18,6 +18,11 @@ import {
   FaChartLine,
   FaTimes,
   FaPlus,
+  FaCircle,
+  FaFileImage,
+  FaIdBadge,
+  FaLayerGroup,
+  FaFileAlt,
 } from "react-icons/fa";
 
 import { motion, AnimatePresence } from "framer-motion";
@@ -81,6 +86,17 @@ export default function UploadImages() {
   const [stageProgress, setStageProgress] = useState(0);
   const [dragOver, setDragOver] = useState(false);
 
+  // Enterprise inspection metadata — context captured alongside the upload.
+  const [inspectionMeta, setInspectionMeta] = useState({
+    projectName: "",
+    inspector: "",
+    siteLocation: "",
+    inspectionType: "Construction Quality",
+  });
+
+  // Inspection ID assigned once analysis completes successfully.
+  const [inspectionId, setInspectionId] = useState("");
+
   /* ── PROCESSING STAGE ANIMATION ── */
   useEffect(() => {
     if (!loading) return;
@@ -98,6 +114,11 @@ export default function UploadImages() {
 
     return () => clearInterval(interval);
   }, [loading]);
+
+  /* ── INSPECTION METADATA HELPERS ── */
+  const updateMeta = (field, value) => {
+    setInspectionMeta(prev => ({ ...prev, [field]: value }));
+  };
 
   /* ── FILE HELPERS ── */
   const addFiles = useCallback((selected) => {
@@ -123,6 +144,16 @@ export default function UploadImages() {
       setActiveIdx(i => Math.min(i, Math.max(0, next.length - 1)));
       return next;
     });
+  };
+
+  /* ── UPLOAD STATISTICS ── */
+  const totalSize = useMemo(() => {
+    return files.reduce((sum, f) => sum + f.file.size, 0);
+  }, [files]);
+
+  const formatBytes = (bytes) => {
+    if (!bytes) return "0 MB";
+    return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
   };
 
   /* ── INPUT ── */
@@ -175,6 +206,14 @@ export default function UploadImages() {
         files[activeIdx]?.preview || files[0]?.preview || ""
       );
 
+      // Persist inspection metadata captured alongside this upload.
+      localStorage.setItem("inspectionMeta", JSON.stringify(inspectionMeta));
+
+      // Assign and persist a unique inspection ID for this completed run.
+      const newInspectionId = `INF-${Date.now()}`;
+      localStorage.setItem("inspectionId", newInspectionId);
+      setInspectionId(newInspectionId);
+
       setResult(data);
     } catch (err) {
       console.error(err);
@@ -192,6 +231,7 @@ export default function UploadImages() {
     setActiveIdx(0);
     setResult(null);
     setError("");
+    setInspectionId("");
     if (inputRef.current) inputRef.current.value = "";
   };
 
@@ -212,8 +252,71 @@ export default function UploadImages() {
     return "D";
   }, [primaryImage]);
 
+  /* ── MULTI-IMAGE INSPECTION SUMMARY ──
+     Aggregates findings across every successfully processed image
+     in result.images, counted by severity. Falls back to zero
+     counts if a given image has no report or unrecognized severity.
+  ── */
+  const inspectionSummary = useMemo(() => {
+    const images = result?.images || [];
+    const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+    let totalFindings = 0;
+
+    images.forEach((img) => {
+      (img?.report || []).forEach((finding) => {
+        totalFindings += 1;
+        const sev = String(finding?.severity || finding?.risk || "").toLowerCase();
+        if (sev.includes("crit")) counts.critical += 1;
+        else if (sev.includes("high")) counts.high += 1;
+        else if (sev.includes("med")) counts.medium += 1;
+        else if (sev.includes("low")) counts.low += 1;
+      });
+    });
+
+    return {
+      imagesProcessed: images.length,
+      totalFindings,
+      ...counts,
+    };
+  }, [result]);
+
+  /* ── TOP RISK CATEGORIES ──
+     Tallies finding categories/titles across all images and
+     returns the most frequent ones. Returns an empty list rather
+     than guessing if no categorized data is present.
+  ── */
+  const topRiskCategories = useMemo(() => {
+    const images = result?.images || [];
+    const tally = {};
+
+    images.forEach((img) => {
+      (img?.report || []).forEach((finding) => {
+        const label = finding?.category || finding?.title || finding?.issue;
+        if (!label) return;
+        tally[label] = (tally[label] || 0) + 1;
+      });
+    });
+
+    return Object.entries(tally)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([label, count]) => ({ label, count }));
+  }, [result]);
+
   /* ── ACTIVE PREVIEW ── */
   const activePreview = files[activeIdx]?.preview || "";
+
+  /* ── INSPECTION READINESS CHECKLIST ── */
+  const readiness = useMemo(() => {
+    const hasImages = files.length > 0;
+    const allSupported = hasImages && files.every(f => f.file.type.startsWith("image/"));
+    return [
+      { label: "Images Uploaded", ready: hasImages },
+      { label: "Supported Format", ready: allSupported },
+      { label: "AI Engine Ready", ready: hasImages },
+      { label: "Report Generation Ready", ready: hasImages },
+    ];
+  }, [files]);
 
   /* ── UI ── */
   return (
@@ -250,6 +353,65 @@ export default function UploadImages() {
             </p>
           </div>
         </motion.div>
+
+        {/* ── INSPECTION METADATA ── */}
+        <PageCard className="inspection-meta-card" style={{ marginBottom: 16 }}>
+          <div className="report-section-header">
+            <FaIdBadge /> Inspection Metadata
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+              gap: 12,
+              marginTop: 12,
+            }}
+          >
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
+              Project Name
+              <input
+                type="text"
+                className="minimal-input"
+                placeholder="e.g. Riverside Tower Phase 2"
+                value={inspectionMeta.projectName}
+                onChange={(e) => updateMeta("projectName", e.target.value)}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
+              Inspector
+              <input
+                type="text"
+                className="minimal-input"
+                placeholder="Inspector name"
+                value={inspectionMeta.inspector}
+                onChange={(e) => updateMeta("inspector", e.target.value)}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
+              Site / Location
+              <input
+                type="text"
+                className="minimal-input"
+                placeholder="e.g. Block C, Level 4"
+                value={inspectionMeta.siteLocation}
+                onChange={(e) => updateMeta("siteLocation", e.target.value)}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
+              Inspection Type
+              <select
+                className="minimal-input"
+                value={inspectionMeta.inspectionType}
+                onChange={(e) => updateMeta("inspectionType", e.target.value)}
+              >
+                <option>Construction Quality</option>
+                <option>Safety Compliance</option>
+                <option>Structural Integrity</option>
+                <option>Pre-Handover</option>
+              </select>
+            </label>
+          </div>
+        </PageCard>
 
         {/* ── UPLOAD PANEL ── */}
         <motion.div
@@ -311,6 +473,26 @@ export default function UploadImages() {
                     >
                       <FaTimes />
                     </button>
+                    <div
+                      className="image-meta"
+                      style={{
+                        fontSize: "0.65rem",
+                        opacity: 0.8,
+                        marginTop: 4,
+                        lineHeight: 1.3,
+                        textAlign: "center",
+                      }}
+                    >
+                      <div
+                        title={f.file.name}
+                        style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      >
+                        {f.file.name}
+                      </div>
+                      <div>
+                        {formatBytes(f.file.size)} · {(f.file.type.split("/")[1] || "image").toUpperCase()}
+                      </div>
+                    </div>
                   </div>
                 ))}
                 {/* Add more button */}
@@ -328,6 +510,44 @@ export default function UploadImages() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Upload statistics */}
+          {files.length > 0 && (
+            <PageCard className="upload-stats-card" style={{ marginBottom: 16 }}>
+              <div className="report-section-header">
+                <FaLayerGroup /> Inspection Assets
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 24,
+                  marginTop: 10,
+                  alignItems: "center",
+                }}
+              >
+                <div>
+                  <strong>{files.length}</strong>
+                  <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Images Uploaded</div>
+                </div>
+                <div>
+                  <strong>{formatBytes(totalSize)}</strong>
+                  <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Total Size</div>
+                </div>
+                <div>
+                  <strong title={files[0]?.file.name}>
+                    {files[0]?.file.name?.length > 22
+                      ? `${files[0].file.name.slice(0, 19)}...`
+                      : files[0]?.file.name}
+                  </strong>
+                  <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Primary Image</div>
+                </div>
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, color: "var(--b)" }}>
+                  <FaCheckCircle /> Inspection Ready
+                </div>
+              </div>
+            </PageCard>
+          )}
 
           {/* Processing stage */}
           <AnimatePresence>
@@ -352,6 +572,87 @@ export default function UploadImages() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Enterprise analysis timeline */}
+          <AnimatePresence>
+            {loading && (
+              <motion.div
+                className="analysis-timeline-card"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                style={{ marginTop: 12, marginBottom: 16 }}
+              >
+                <PageCard>
+                  {[
+                    "Upload Complete",
+                    "AI Analysis",
+                    "Risk Assessment",
+                    "Compliance Review",
+                    "Report Compilation",
+                  ].map((label, i) => {
+                    const stepThreshold = (i / 4) * 100;
+                    const isDone = stageProgress > stepThreshold;
+                    const isCurrent =
+                      stageProgress >= stepThreshold &&
+                      stageProgress < ((i + 1) / 4) * 100;
+                    return (
+                      <div
+                        key={label}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "4px 0",
+                          fontSize: "0.85rem",
+                          fontWeight: isCurrent ? 600 : 400,
+                          opacity: isDone || isCurrent ? 1 : 0.45,
+                          color: isDone ? "var(--b)" : "inherit",
+                        }}
+                      >
+                        {isDone ? <FaCheckCircle /> : <FaCircle style={{ fontSize: "0.6rem" }} />}
+                        {label}
+                      </div>
+                    );
+                  })}
+                </PageCard>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Inspection readiness */}
+          {files.length > 0 && !result && (
+            <PageCard className="readiness-card" style={{ marginBottom: 16 }}>
+              <div className="report-section-header">
+                <FaShieldAlt /> Inspection Readiness
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 14,
+                  marginTop: 10,
+                }}
+              >
+                {readiness.map((r, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: "0.85rem",
+                      color: r.ready ? "var(--b)" : "inherit",
+                      opacity: r.ready ? 1 : 0.5,
+                    }}
+                  >
+                    {r.ready ? <FaCheckCircle /> : <FaCircle style={{ fontSize: "0.6rem" }} />}
+                    {r.label}
+                  </div>
+                ))}
+              </div>
+            </PageCard>
+          )}
 
           {/* Actions */}
           <div className="hero-actions">
@@ -395,6 +696,24 @@ export default function UploadImages() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
             >
+              {/* Inspection ID badge */}
+              {inspectionId && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 14,
+                    fontSize: "0.85rem",
+                    opacity: 0.85,
+                  }}
+                >
+                  <FaIdBadge />
+                  <span>Inspection ID</span>
+                  <strong style={{ letterSpacing: "0.02em" }}>{inspectionId}</strong>
+                </div>
+              )}
+
               {/* Score cards */}
               <div className="executive-grid">
                 {[
@@ -445,6 +764,72 @@ export default function UploadImages() {
                 </PageCard>
               )}
 
+              {/* Multi-image inspection summary */}
+              {inspectionSummary.imagesProcessed > 1 && (
+                <PageCard className="executive-summary-card">
+                  <div className="report-section-header">
+                    <FaFileImage /> Inspection Summary
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+                      gap: 12,
+                      marginTop: 10,
+                    }}
+                  >
+                    <div>
+                      <strong>{inspectionSummary.imagesProcessed}</strong>
+                      <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Images Processed</div>
+                    </div>
+                    <div>
+                      <strong>{inspectionSummary.totalFindings}</strong>
+                      <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Total Findings</div>
+                    </div>
+                    <div>
+                      <strong style={{ color: "#e5484d" }}>{inspectionSummary.critical}</strong>
+                      <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Critical</div>
+                    </div>
+                    <div>
+                      <strong style={{ color: "#f59e0b" }}>{inspectionSummary.high}</strong>
+                      <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>High</div>
+                    </div>
+                    <div>
+                      <strong>{inspectionSummary.medium}</strong>
+                      <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Medium</div>
+                    </div>
+                    <div>
+                      <strong>{inspectionSummary.low}</strong>
+                      <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Low</div>
+                    </div>
+                  </div>
+                </PageCard>
+              )}
+
+              {/* Top risk categories */}
+              {topRiskCategories.length > 0 && (
+                <PageCard className="executive-summary-card">
+                  <div className="report-section-header">
+                    <FaExclamationTriangle /> Top Risk Categories
+                  </div>
+                  <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                    {topRiskCategories.map((rc, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: "0.9rem",
+                        }}
+                      >
+                        <span>{rc.label}</span>
+                        <span style={{ opacity: 0.7 }}>{rc.count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </PageCard>
+              )}
+
               {/* Summary */}
               <PageCard className="executive-summary-card">
                 <div className="report-section-header">
@@ -460,6 +845,8 @@ export default function UploadImages() {
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
                   marginTop: 20,
                 }}
               >
@@ -470,12 +857,21 @@ export default function UploadImages() {
                   Skip to Report
                 </button>
 
-                <button
-                  className="primary-btn"
-                  onClick={() => navigate("/quality/best-practices")}
-                >
-                  Next →
-                </button>
+                <div style={{ display: "flex", gap: 12 }}>
+                  <button
+                    className="secondary-btn"
+                    onClick={() => navigate("/quality/report")}
+                  >
+                    <FaFileAlt /> Generate Report →
+                  </button>
+
+                  <button
+                    className="primary-btn"
+                    onClick={() => navigate("/quality/best-practices")}
+                  >
+                    Continue to Best Practices →
+                  </button>
+                </div>
               </div>
             </motion.div>
           )}

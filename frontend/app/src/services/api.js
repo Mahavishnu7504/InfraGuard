@@ -215,7 +215,7 @@ export const getAnalyticsSummary =
     );
 
 export const getAlerts =
-  () =>
+  (camId = 0) =>
     apiGet(
-      "/activity/latest/0"
+      `/activity/latest/${camId}`
     );

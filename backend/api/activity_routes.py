@@ -2,6 +2,11 @@ from fastapi import APIRouter
 from datetime import datetime
 import uuid
 
+try:
+    from backend.core.websocket_manager import manager
+except ImportError:
+    manager = None
+
 router = APIRouter()
 
 ALERTS = []
@@ -104,6 +109,15 @@ def analytics_summary():
             ) * 100
         )
 
+    active_connections = 0
+    events_sent = 0
+
+    if manager is not None:
+        active_connections = len(
+            getattr(manager, "active_connections", [])
+        )
+        events_sent = getattr(manager, "total_events_sent", 0)
+
     return {
 
         "low":
@@ -122,7 +136,51 @@ def analytics_summary():
             safety_score,
 
         "system_status":
-            "ACTIVE"
+            "ACTIVE",
+
+        "active_connections":
+            active_connections,
+
+        "events_sent":
+            events_sent,
+
+        "last_updated":
+            datetime.utcnow().isoformat()
+    }
+
+
+# =========================================
+# ANALYTICS HEALTH
+# =========================================
+
+@router.get("/analytics/health")
+def analytics_health():
+
+    active_connections = 0
+    events_sent = 0
+
+    if manager is not None:
+        active_connections = len(
+            getattr(manager, "active_connections", [])
+        )
+        events_sent = getattr(manager, "total_events_sent", 0)
+
+    return {
+
+        "alerts_stored":
+            len(ALERTS),
+
+        "max_alerts":
+            MAX_ALERTS,
+
+        "websocket_connections":
+            active_connections,
+
+        "events_sent":
+            events_sent,
+
+        "status":
+            "HEALTHY" if manager is not None else "DEGRADED"
     }
 
 

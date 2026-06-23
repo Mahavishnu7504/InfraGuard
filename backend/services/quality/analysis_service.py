@@ -409,6 +409,16 @@ def analytics_summary(report: list) -> dict:
         "review_required":     conf_low,
     }
 
+    # ── Recurrence level classification ──────────────────
+    if dominant_issue_count >= 7:
+        recurrence_level = "Systemic"
+    elif dominant_issue_count >= 4:
+        recurrence_level = "Frequent"
+    elif dominant_issue_count >= 2:
+        recurrence_level = "Recurring"
+    else:
+        recurrence_level = "Isolated"
+
     # ── Pattern narrative ─────────────────────────────────
     pattern_narrative = ""
     if dominant_issue_count >= 3:
@@ -457,7 +467,120 @@ def analytics_summary(report: list) -> dict:
 
         # Management intelligence
         "management_attention_required": management_attention_required,
+
+        # Recurrence intelligence
+        "recurrence_level":              recurrence_level,
     }
+
+
+
+# =========================================================
+# DEPARTMENT EXPOSURE SUMMARY
+# =========================================================
+
+_DEPARTMENT_MAP = {
+    "surface_crack":      "Engineering",
+    "rebar_exposure":     "Engineering",
+    "water_leakage":      "Engineering",
+    "corrosion":          "Maintenance",
+    "material_damage":    "Quality",
+    "poor_housekeeping":  "Operations",
+    "ppe_non_compliance": "Safety",
+}
+
+
+def department_exposure(report: list) -> dict:
+    """
+    Maps each finding's issue type to a responsible department
+    and returns a count per department.
+
+    Used by dashboard analytics and future executive views to
+    surface which functional teams carry the highest exposure.
+
+    Returns
+    -------
+    dict  e.g. {"Engineering": 5, "Quality": 3, "Safety": 2}
+    """
+    exposure: Counter = Counter()
+
+    for item in report:
+        it   = item.get("issue_type", "")
+        dept = _DEPARTMENT_MAP.get(it, "General")
+        exposure[dept] += 1
+
+    return dict(exposure)
+
+
+# =========================================================
+# MANAGEMENT ESCALATION FLAG
+# =========================================================
+
+def management_escalation_required(severity_counts: Counter) -> bool:
+    """
+    Returns True when the finding profile warrants executive attention.
+
+    Escalation triggers:
+      - Any critical finding present
+      - Three or more high-priority findings
+    """
+    if severity_counts.get("critical", 0) > 0:
+        return True
+    if severity_counts.get("high", 0) >= 3:
+        return True
+    return False
+
+
+# =========================================================
+# INSPECTION HEALTH RATING
+# =========================================================
+
+def inspection_health_rating(score: int) -> str:
+    """
+    Single-word management KPI derived from the compliance score.
+
+    Thresholds
+    ----------
+    >= 90  → Excellent
+    >= 80  → Good
+    >= 65  → Needs Improvement
+    <  65  → Critical
+    """
+    if score >= 90:
+        return "Excellent"
+    if score >= 80:
+        return "Good"
+    if score >= 65:
+        return "Needs Improvement"
+    return "Critical"
+
+
+# =========================================================
+# EXECUTIVE INSIGHT GENERATOR
+# =========================================================
+
+def executive_insight(analytics: dict) -> str:
+    """
+    Produces a single executive-facing insight sentence from the
+    analytics payload already produced by analytics_summary().
+
+    Prioritises the dominant issue when a pattern has been
+    identified; falls back to a cluster-level statement otherwise.
+    """
+    dominant_display = analytics.get("dominant_issue_display", "None")
+    dominant_count   = analytics.get("dominant_issue_count",   0)
+    issue_cluster    = analytics.get("issue_cluster",          "General Construction Quality")
+
+    if dominant_display and dominant_display != "None" and dominant_count >= 2:
+        return (
+            f"{dominant_display} represent the dominant recurring issue "
+            f"across the inspected site and should be prioritised for "
+            f"corrective action."
+        )
+
+    return (
+        f"The inspection identified a {issue_cluster.lower()} pattern "
+        f"that warrants targeted corrective review across affected work areas."
+    )
 
 
 # =========================================================
@@ -1119,6 +1242,12 @@ def analyze_quality(
     # ── Analytics ─────────────────────────────────────────
     analytics = analytics_summary(report)
 
+    # ── New analytics layer ───────────────────────────────
+    dept_exposure   = department_exposure(report)
+    escalation_flag = management_escalation_required(severity_counts)
+    health_rating   = inspection_health_rating(compliance_score)
+    insight         = executive_insight(analytics)
+
     # ── Executive risk index & site intelligence ──────────
     risk_index = executive_risk_index(
         compliance_score,
@@ -1179,8 +1308,12 @@ def analyze_quality(
         # Enterprise analytics
         "analytics": {
             **analytics,
-            "audit_readiness":      audit,
-            "compliance_benchmark": compliance_benchmark,
+            "audit_readiness":          audit,
+            "compliance_benchmark":     compliance_benchmark,
+            "department_exposure":      dept_exposure,
+            "management_escalation":    escalation_flag,
+            "inspection_health_rating": health_rating,
+            "executive_insight":        insight,
         },
 
         # AI

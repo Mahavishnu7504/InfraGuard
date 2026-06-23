@@ -5,6 +5,11 @@ import {
   FaBrain,
   FaArrowRight,
   FaArrowLeft,
+  FaUserShield,
+  FaClipboardCheck,
+  FaChartBar,
+  FaTable,
+  FaBullseye,
 } from "react-icons/fa";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -67,6 +72,56 @@ function extractFindings(qualityData) {
   return [];
 }
 
+/* ── PRIORITY CLASSIFICATION ──
+   Maps a finding category to a severity tier used for the
+   priority badge on each recommendation card.
+─────────────────────────────────────────────────────────────────── */
+function getPriority(category = "") {
+  const c = category.toLowerCase();
+  if (c.includes("rebar") || c.includes("crack")) return "Critical";
+  if (c.includes("housekeeping") || c.includes("ppe") || c.includes("material") || c.includes("damage")) return "High";
+  return "Medium";
+}
+
+/* ── RESPONSIBLE TEAM ASSIGNMENT ──
+   Maps a finding category to the team accountable for remediation.
+─────────────────────────────────────────────────────────────────── */
+function getResponsibleTeam(category = "") {
+  const c = category.toLowerCase();
+  if (c.includes("structural") || c.includes("rebar") || c.includes("crack")) return "Structural Engineer";
+  if (c.includes("housekeeping")) return "Site Supervisor";
+  if (c.includes("ppe") || c.includes("safety")) return "Safety Officer";
+  if (c.includes("material") || c.includes("damage")) return "Quality Inspector";
+  return "Site Supervisor";
+}
+
+/* ── COMPLIANCE STANDARDS MAPPING ──
+   Maps a finding category to the applicable regulatory/quality
+   standards referenced in the recommendation card.
+─────────────────────────────────────────────────────────────────── */
+function getComplianceMapping(category = "") {
+  const c = category.toLowerCase();
+  if (c.includes("ppe") || c.includes("safety")) return ["OSHA 1926", "ISO 45001"];
+  if (c.includes("housekeeping")) return ["OSHA Site Safety"];
+  if (c.includes("structural") || c.includes("rebar") || c.includes("crack")) return ["Construction QA", "ISO 9001"];
+  if (c.includes("material") || c.includes("damage")) return ["ISO 9001"];
+  return ["General Site Compliance"];
+}
+
+/* ── RISK IMPACT ──
+   Maps a finding category to a plain-language description of
+   the operational consequence if left unaddressed.
+─────────────────────────────────────────────────────────────────── */
+function getRiskImpact(category = "") {
+  const c = category.toLowerCase();
+  if (c.includes("housekeeping")) return "Trip hazards and operational disruption.";
+  if (c.includes("ppe") || c.includes("safety")) return "Worker injury exposure.";
+  if (c.includes("crack")) return "Structural degradation.";
+  if (c.includes("rebar")) return "Corrosion and integrity loss.";
+  if (c.includes("material") || c.includes("damage")) return "Asset deterioration and rework costs.";
+  return "Operational and compliance risk if unaddressed.";
+}
+
 /* ── Derive AI-contextual practices from analysis results ─────── */
 function buildAIPractices(findings = []) {
   if (!findings.length) return [];
@@ -99,6 +154,92 @@ export default function BestPractices() {
   const aiFindings = useMemo(() => extractFindings(qualityData), [qualityData]);
   const hasAnalysis = aiFindings.length > 0;
   const aiPractices = useMemo(() => buildAIPractices(aiFindings), [aiFindings]);
+
+  /* ── INSPECTION SUMMARY ──
+     Aggregates aiFindings by severity and category for the
+     summary panel. Read-only derivation; does not alter
+     extractFindings() or buildAIPractices().
+  ── */
+  const inspectionSummary = useMemo(() => {
+    const counts = { critical: 0, high: 0 };
+    const categories = new Set();
+
+    aiFindings.forEach((f) => {
+      const sev = String(f?.severity || f?.risk || "").toLowerCase();
+      if (sev.includes("crit")) counts.critical += 1;
+      else if (sev.includes("high")) counts.high += 1;
+      if (f?.category) categories.add(f.category);
+    });
+
+    return {
+      total: aiFindings.length,
+      critical: counts.critical,
+      high: counts.high,
+      categoriesAffected: categories.size,
+      recommendationsGenerated: aiPractices.length,
+    };
+  }, [aiFindings, aiPractices]);
+
+  /* ── TOP RISK AREAS ──
+     Ranks the categories with the most findings, mapped to a
+     readable label via getResponsibleTeam's category families.
+  ── */
+  const topRiskAreas = useMemo(() => {
+    const tally = {};
+    aiFindings.forEach((f) => {
+      const cat = f?.category;
+      if (!cat) return;
+      tally[cat] = (tally[cat] || 0) + 1;
+    });
+    return Object.entries(tally)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([cat, count]) => ({
+        label: cat.replaceAll("_", " "),
+        count,
+        priority: getPriority(cat),
+      }));
+  }, [aiFindings]);
+
+  /* ── EXECUTIVE / MANAGEMENT RECOMMENDATION ──
+     Plain-language summary generated from aiFindings severity
+     counts, shown in the management recommendation section.
+  ── */
+  const managementRecommendation = useMemo(() => {
+    const { critical, high, total } = inspectionSummary;
+    if (!total) return "";
+    if (critical > 0) {
+      return `This inspection identified ${critical} critical and ${high} high-severity finding${high === 1 ? "" : "s"}. Immediate corrective action is recommended before operational continuation.`;
+    }
+    if (high > 0) {
+      return `This inspection identified ${high} high-severity finding${high === 1 ? "" : "s"} with no critical issues. Corrective action is recommended within the standard remediation window.`;
+    }
+    return `This inspection identified ${total} finding${total === 1 ? "" : "s"}, none rated critical or high severity. Routine follow-up is recommended.`;
+  }, [inspectionSummary]);
+
+  /* ── RECOMMENDATION MATRIX ROWS ──
+     One row per AI practice card, reusing the same category →
+     priority/team/action derivation used on the cards above.
+  ── */
+  const matrixRows = useMemo(() => {
+    return aiPractices.map((item) => {
+      const category = item.title.split(" — ")[0];
+      const priority = getPriority(category);
+      const team = getResponsibleTeam(category);
+      const action =
+        priority === "Critical"
+          ? "Engineering Review"
+          : priority === "High"
+            ? "Immediate Cleanup"
+            : "Scheduled Remediation";
+      return {
+        issue: category.replaceAll("_", " "),
+        priority,
+        owner: team,
+        action,
+      };
+    });
+  }, [aiPractices]);
 
   return (
     <PageLayout
@@ -154,6 +295,72 @@ export default function BestPractices() {
           </motion.div>
         )}
 
+        {/* ── INSPECTION SUMMARY PANEL ── */}
+        {hasAnalysis && (
+          <PageCard className="executive-summary-card" style={{ marginBottom: 16 }}>
+            <div className="report-section-header">
+              <FaChartBar /> Inspection Summary
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+                gap: 12,
+                marginTop: 10,
+              }}
+            >
+              <div>
+                <strong>{inspectionSummary.total}</strong>
+                <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Total Findings</div>
+              </div>
+              <div>
+                <strong style={{ color: "#e5484d" }}>{inspectionSummary.critical}</strong>
+                <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Critical Findings</div>
+              </div>
+              <div>
+                <strong style={{ color: "#f59e0b" }}>{inspectionSummary.high}</strong>
+                <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>High Findings</div>
+              </div>
+              <div>
+                <strong>{inspectionSummary.categoriesAffected}</strong>
+                <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Categories Affected</div>
+              </div>
+              <div>
+                <strong>{inspectionSummary.recommendationsGenerated}</strong>
+                <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Recommendations Generated</div>
+              </div>
+            </div>
+          </PageCard>
+        )}
+
+        {/* ── TOP RISK AREAS ── */}
+        {hasAnalysis && topRiskAreas.length > 0 && (
+          <PageCard className="executive-summary-card" style={{ marginBottom: 16 }}>
+            <div className="report-section-header">
+              <FaBullseye /> Highest Risk Areas
+            </div>
+            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+              {topRiskAreas.map((area, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    fontSize: "0.9rem",
+                  }}
+                >
+                  <span style={{ textTransform: "capitalize" }}>{area.label}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 10, opacity: 0.8 }}>
+                    {area.priority}
+                    <span style={{ opacity: 0.6 }}>· {area.count} finding{area.count === 1 ? "" : "s"}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </PageCard>
+        )}
+
         {/* ── GRID ── */}
         <div className="practice-grid">
           {!hasAnalysis && (
@@ -167,49 +374,194 @@ export default function BestPractices() {
               </div>
             </PageCard>
           )}
-          {aiPractices.map((item, index) => (
-            <motion.div
-              key={index}
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.055 }}
-            >
-              <PageCard className="practice-enterprise-card">
+          {aiPractices.map((item, index) => {
+            const category = item.title.split(" — ")[0];
+            const priority = getPriority(category);
+            const team = getResponsibleTeam(category);
+            const compliance = getComplianceMapping(category);
+            const riskImpact = getRiskImpact(category);
+            const priorityColors = {
+              Critical: "#e5484d",
+              High: "#f59e0b",
+              Medium: "#3b82f6",
+              Low: "#6b7280",
+            };
 
-                {/* AI badge on derived cards */}
-                <div className="ai-generated-badge" style={{ marginBottom: 14 }}>
-                  <FaBrain /> AI Derived
-                </div>
+            return (
+              <motion.div
+                key={index}
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.055 }}
+              >
+                <PageCard className="practice-enterprise-card" style={{ position: "relative" }}>
 
-                {/* Header */}
-                <div className="practice-header">
-                  <div className="practice-icon">{item.icon}</div>
-                  <div>
-                    <h3>{item.title}</h3>
-                    <p>{item.description}</p>
+                  {/* Priority badge — top right of card */}
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: 16,
+                      right: 16,
+                      fontSize: "0.7rem",
+                      fontWeight: 700,
+                      letterSpacing: "0.04em",
+                      padding: "3px 10px",
+                      borderRadius: 999,
+                      color: "#fff",
+                      background: priorityColors[priority] || "#6b7280",
+                    }}
+                  >
+                    {priority.toUpperCase()}
                   </div>
-                </div>
 
-                {/* Points */}
-                <div className="practice-points">
-                  {item.points.map((point, i) => (
-                    <div key={i} className="practice-point">
-                      <FaCheckCircle />
-                      <span>{point}</span>
+                  {/* AI badge on derived cards */}
+                  <div className="ai-generated-badge" style={{ marginBottom: 14 }}>
+                    <FaBrain /> AI Derived
+                  </div>
+
+                  {/* Header */}
+                  <div className="practice-header">
+                    <div className="practice-icon">{item.icon}</div>
+                    <div>
+                      <h3>{item.title}</h3>
+                      <p>{item.description}</p>
                     </div>
-                  ))}
-                </div>
+                  </div>
 
-                {/* Footer */}
-                <div className="practice-footer">
-                  <FaExclamationTriangle />
-                  Generated from inspection findings.
-                </div>
+                  {/* Risk Impact / Priority / Responsible / Compliance */}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                      gap: 12,
+                      margin: "14px 0",
+                      padding: "12px 0",
+                      borderTop: "1px solid var(--border)",
+                      borderBottom: "1px solid var(--border)",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: "0.72rem", opacity: 0.6, textTransform: "uppercase" }}>Risk Impact</div>
+                      <div style={{ fontSize: "0.85rem", marginTop: 2 }}>{riskImpact}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: "0.72rem", opacity: 0.6, textTransform: "uppercase" }}>Priority</div>
+                      <div style={{ fontSize: "0.85rem", marginTop: 2, fontWeight: 600 }}>{priority}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: "0.72rem", opacity: 0.6, textTransform: "uppercase" }}>Responsible Team</div>
+                      <div style={{ fontSize: "0.85rem", marginTop: 2 }}>{team}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: "0.72rem", opacity: 0.6, textTransform: "uppercase" }}>Compliance Area</div>
+                      <div style={{ fontSize: "0.85rem", marginTop: 2 }}>{compliance.join(" / ")}</div>
+                    </div>
+                  </div>
 
-              </PageCard>
-            </motion.div>
-          ))}
+                  {/* Points */}
+                  <div className="practice-points">
+                    {item.points.map((point, i) => (
+                      <div key={i} className="practice-point">
+                        <FaCheckCircle />
+                        <span>{point}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Applicable standards */}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                    {compliance.map((std, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          fontSize: "0.72rem",
+                          padding: "3px 9px",
+                          borderRadius: 6,
+                          background: "rgba(0,200,255,0.08)",
+                          border: "1px solid var(--border-hi)",
+                        }}
+                      >
+                        {std}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Footer */}
+                  <div className="practice-footer">
+                    <FaExclamationTriangle />
+                    Generated from inspection findings.
+                  </div>
+
+                </PageCard>
+              </motion.div>
+            );
+          })}
         </div>
+
+        {/* ── RECOMMENDATION MATRIX ── */}
+        {hasAnalysis && matrixRows.length > 0 && (
+          <PageCard className="executive-summary-card" style={{ marginTop: 16, overflowX: "auto" }}>
+            <div className="report-section-header">
+              <FaTable /> Recommendation Matrix
+            </div>
+            <table style={{ width: "100%", marginTop: 12, borderCollapse: "collapse", fontSize: "0.85rem" }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border)" }}>
+                  <th style={{ padding: "8px 6px", opacity: 0.7 }}>Issue</th>
+                  <th style={{ padding: "8px 6px", opacity: 0.7 }}>Priority</th>
+                  <th style={{ padding: "8px 6px", opacity: 0.7 }}>Owner</th>
+                  <th style={{ padding: "8px 6px", opacity: 0.7 }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matrixRows.map((row, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "8px 6px", textTransform: "capitalize" }}>{row.issue}</td>
+                    <td style={{ padding: "8px 6px" }}>{row.priority}</td>
+                    <td style={{ padding: "8px 6px" }}>{row.owner}</td>
+                    <td style={{ padding: "8px 6px" }}>{row.action}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </PageCard>
+        )}
+
+        {/* ── MANAGEMENT RECOMMENDATION ── */}
+        {hasAnalysis && managementRecommendation && (
+          <PageCard className="executive-summary-card" style={{ marginTop: 16 }}>
+            <div className="report-section-header">
+              <FaUserShield /> Management Recommendation
+            </div>
+            <p className="executive-summary-text" style={{ marginTop: 8 }}>
+              {managementRecommendation}
+            </p>
+          </PageCard>
+        )}
+
+        {/* ── REPORT READINESS STATUS ── */}
+        {hasAnalysis && (
+          <PageCard className="executive-summary-card" style={{ marginTop: 16, marginBottom: 8 }}>
+            <div className="report-section-header">
+              <FaClipboardCheck /> Report Readiness
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 10 }}>
+              {[
+                "Findings Reviewed",
+                "Recommendations Generated",
+                "Corrective Actions Identified",
+                "Ready For Report Generation",
+              ].map((label, i) => (
+                <div
+                  key={i}
+                  style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.85rem", color: "var(--b)" }}
+                >
+                  <FaCheckCircle /> {label}
+                </div>
+              ))}
+            </div>
+          </PageCard>
+        )}
 
         {/* ── NAVIGATION ── */}
         <div
