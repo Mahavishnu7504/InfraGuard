@@ -27,6 +27,19 @@ DEPARTMENT_MAPPING = {
     "ppe_non_compliance": "Safety Department",
 }
 
+DEPARTMENT_EXECUTIVE_OWNER = {
+
+    "Civil Engineering": "Engineering Manager",
+
+    "Maintenance": "Maintenance Manager",
+
+    "Construction Quality": "Quality Assurance Manager",
+
+    "Site Operations": "Site Operations Manager",
+
+    "Safety Department": "HSE Manager",
+}
+
 CLOSURE_TIMELINE = {
 
     "critical": "Immediate (0-24 Hours)",
@@ -47,6 +60,17 @@ AUDIT_PRIORITY = {
     "medium": "Supervisor Review",
 
     "low": "Routine Monitoring",
+}
+
+AUDIT_EXPOSURE_LIBRARY = {
+
+    "critical": "High probability of major audit non-conformance.",
+
+    "high": "Potential significant audit observation.",
+
+    "medium": "Moderate audit exposure requiring corrective action.",
+
+    "low": "Limited audit exposure.",
 }
 
 CONSEQUENCE_LIBRARY = {
@@ -140,6 +164,39 @@ MANAGEMENT_IMPACT_LIBRARY = {
 DEFAULT_MANAGEMENT_IMPACT = (
     "The identified finding may affect operational performance and "
     "compliance outcomes."
+)
+
+EXECUTIVE_RECOMMENDATIONS = {
+
+    "surface_crack":
+        "Implement structural condition monitoring and engineering review "
+        "procedures.",
+
+    "corrosion":
+        "Strengthen asset preservation strategy and protective coating "
+        "management.",
+
+    "water_leakage":
+        "Improve waterproofing inspection and drainage maintenance controls.",
+
+    "rebar_exposure":
+        "Enhance construction quality verification and reinforcement "
+        "protection controls.",
+
+    "material_damage":
+        "Improve material handling, storage, and inspection procedures.",
+
+    "poor_housekeeping":
+        "Implement site-wide housekeeping audits and supervisory "
+        "accountability.",
+
+    "ppe_non_compliance":
+        "Strengthen safety culture initiatives and PPE enforcement "
+        "programs.",
+}
+
+DEFAULT_EXECUTIVE_RECOMMENDATION = (
+    "Maintain established quality assurance controls."
 )
 
 
@@ -1277,6 +1334,37 @@ def _resolve_confidence_note(confidence):
     return "AI confidence is high."
 
 
+def recurrence_classification(count):
+    """
+    Classify how many times an issue type has recurred (e.g. across
+    a site's inspection history) into a human-readable pattern label.
+
+    Parameters
+    ----------
+    count : int
+        Number of prior/total occurrences of the issue.
+
+    Returns
+    -------
+    str
+        One of:
+        "Critical Recurring Pattern"   (count >= 10)
+        "Systemic Recurring Pattern"   (5 <= count < 10)
+        "Emerging Recurring Pattern"   (2 <= count < 5)
+        "Isolated Occurrence"          (count < 2)
+    """
+    if count >= 10:
+        return "Critical Recurring Pattern"
+
+    if count >= 5:
+        return "Systemic Recurring Pattern"
+
+    if count >= 2:
+        return "Emerging Recurring Pattern"
+
+    return "Isolated Occurrence"
+
+
 # =========================================================
 # PUBLIC ACCESS
 # =========================================================
@@ -1307,7 +1395,8 @@ def get_guidelines(
         preventive_action, best_practice,
         guideline_reference, potential_consequences,
         management_impact, risk_category, department,
-        target_closure_date, audit_priority, confidence_note
+        target_closure_date, audit_priority, audit_exposure,
+        executive_recommendation, executive_owner, confidence_note
     """
 
     template    = GUIDELINES.get(issue_type, DEFAULT_GUIDELINE)
@@ -1355,6 +1444,21 @@ def get_guidelines(
         "audit_priority": AUDIT_PRIORITY.get(
             severity_key,
             "Routine Monitoring",
+        ),
+
+        "audit_exposure": AUDIT_EXPOSURE_LIBRARY.get(
+            severity_key,
+            AUDIT_EXPOSURE_LIBRARY["medium"],
+        ),
+
+        "executive_recommendation": EXECUTIVE_RECOMMENDATIONS.get(
+            issue_type,
+            DEFAULT_EXECUTIVE_RECOMMENDATION,
+        ),
+
+        "executive_owner": DEPARTMENT_EXECUTIVE_OWNER.get(
+            DEPARTMENT_MAPPING.get(issue_type),
+            "Site Manager",
         ),
 
         "confidence_note": _resolve_confidence_note(confidence),

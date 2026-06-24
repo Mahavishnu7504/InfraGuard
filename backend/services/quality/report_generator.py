@@ -2,6 +2,7 @@ from collections import Counter
 from backend.services.quality.guideline_service import get_guidelines
 from datetime import datetime
 import uuid
+import random
 
 SEVERITY_SCORE_DEDUCTIONS = {
     "critical": 25,
@@ -14,6 +15,29 @@ SEVERITY_ORDER = {
     "high":     1,
     "medium":   2,
     "low":      3,
+}
+
+# =========================================================
+# OBSERVATION DIVERSITY TEMPLATES
+# =========================================================
+# Issue types not present here fall back to the guideline's
+# single static observation sentence (see build_observation).
+OBSERVATION_TEMPLATES = {
+    "poor_housekeeping": [
+        "Housekeeping deficiencies were identified within the inspection area",
+        "Material organization standards were not consistently maintained",
+        "Site cleanliness controls appear to have deteriorated in this area",
+    ],
+    "rebar_exposure": [
+        "Reinforcement elements were observed without adequate concrete cover",
+        "Exposed reinforcement was identified during inspection",
+        "Concrete protection of reinforcing steel appears compromised",
+    ],
+    "material_damage": [
+        "Visible material deterioration was observed",
+        "Construction materials exhibited signs of physical damage",
+        "Material condition deficiencies were identified",
+    ],
 }
 
 # =========================================================
@@ -307,7 +331,11 @@ def build_observation(
     integrating issue type, spatial zone, severity, confidence
     evidence, and finding density.
     """
-    base = guideline["observation"]
+    templates = OBSERVATION_TEMPLATES.get(issue_type)
+    if templates:
+        base = random.choice(templates)
+    else:
+        base = guideline["observation"]
     sev_key = severity.lower()
 
     # ── Location context ─────────────────────────────────
@@ -710,6 +738,33 @@ def target_resolution(severity: str) -> str:
 # =========================================================
 # SINGLE-IMAGE FINDING BUILDER
 # =========================================================
+# =========================================================
+# DYNAMIC ROOT CAUSE INTELLIGENCE
+# =========================================================
+def build_dynamic_root_cause(issue_type: str, severity: str, total_findings: int) -> str:
+    """
+    Derive an executive-level root cause statement from severity,
+    finding density, and issue type, instead of a single static
+    guideline string.
+    """
+    if severity.lower() == "critical":
+        return "Systemic management control failure"
+
+    if total_findings >= 5:
+        return "Recurring site-wide process enforcement weakness"
+
+    if issue_type == "poor_housekeeping":
+        return "Housekeeping discipline breakdown"
+
+    if issue_type == "ppe_non_compliance":
+        return "Safety awareness and supervision deficiency"
+
+    if issue_type == "material_damage":
+        return "Improper material handling and storage practices"
+
+    return "Localized operational control gap"
+
+
 def build_finding(item: dict, total_findings: int = 1) -> dict:
     issue_type = item.get("issue_type", "unknown_issue")
     confidence = float(item.get("confidence", 0.0))
@@ -748,7 +803,7 @@ def build_finding(item: dict, total_findings: int = 1) -> dict:
         "best_practice":       guideline["best_practice"],
         "guideline_reference": guideline["guideline_reference"],
         # HSE classification
-        "root_cause":          guideline["root_cause"],
+        "root_cause":          build_dynamic_root_cause(issue_type, severity, total_findings),
         "reference_standard":  reference_standard(issue_type),
         "condition":           condition_classification(severity),
         "priority_level":      priority_level(severity),
@@ -1352,6 +1407,79 @@ def build_ai_findings_bullets(
 # =========================================================
 # EXECUTIVE SUMMARY BUILDER  (Section 1 body text)
 # =========================================================
+# =========================================================
+# SITE EXECUTIVE NARRATIVE
+# =========================================================
+def build_site_executive_narrative(image_reports: list, overall_score: int) -> str:
+    """
+    Produce a short executive-level narrative summarizing systemic
+    risk posture across the inspected site, distinct from the
+    per-finding executive summary.
+    """
+    total_findings = sum(r["total_findings"] for r in image_reports)
+    critical_count  = sum(r["severity_breakdown"].get("Critical", 0) for r in image_reports)
+    high_count      = sum(r["severity_breakdown"].get("High",     0) for r in image_reports)
+
+    issue_counter: Counter = Counter()
+    for img in image_reports:
+        for f in img["findings"]:
+            issue_counter[f["issue_type"]] += 1
+    recurring_issue_count = sum(1 for c in issue_counter.values() if c > 1)
+
+    if total_findings == 0:
+        return (
+            "The inspection identified no significant quality deviations "
+            "across the reviewed operational zones. Current site discipline "
+            "and supervision practices appear effective and should be "
+            "maintained through routine monitoring."
+        )
+
+    if recurring_issue_count > 0:
+        opening = (
+            "The inspection identified recurring quality deficiencies across "
+            "multiple operational zones."
+        )
+        pattern_line = (
+            "The distribution and frequency of findings indicate systemic "
+            "control weaknesses rather than isolated events."
+        )
+    else:
+        opening = (
+            "The inspection identified isolated quality deviations within "
+            "the reviewed operational zones."
+        )
+        pattern_line = (
+            "Findings do not currently indicate a site-wide pattern, though "
+            "continued monitoring is recommended."
+        )
+
+    if critical_count > 0:
+        severity_line = (
+            f"{critical_count} critical finding{'s' if critical_count != 1 else ''} "
+            f"{'require' if critical_count != 1 else 'requires'} immediate management "
+            f"escalation and engineering review."
+        )
+    elif high_count > 0:
+        severity_line = (
+            f"{high_count} high-priority finding{'s' if high_count != 1 else ''} "
+            f"{'warrant' if high_count != 1 else 'warrants'} accelerated corrective "
+            f"action within the current operational period."
+        )
+    else:
+        severity_line = (
+            "No critical or high-priority findings were identified, though "
+            "continued enforcement of corrective actions is advised."
+        )
+
+    closing = (
+        "Management attention should focus on strengthening site supervision, "
+        "quality assurance enforcement, and corrective action tracking "
+        "mechanisms."
+    )
+
+    return f"{opening} {pattern_line} {severity_line} {closing}"
+
+
 def build_executive_summary(
     image_reports: list,
     overall_score: int,
@@ -1628,6 +1756,7 @@ def generate_multi_image_report(
     overall_recs      = aggregate_overall_recommendations(image_reports)
 
     executive_summary = build_executive_summary(image_reports, overall_score)
+    site_executive_narrative = build_site_executive_narrative(image_reports, overall_score)
     site_summary      = build_site_summary(image_reports, overall_score)
     priority_action   = build_priority_action(overall_risk)
     conclusion        = build_conclusion(image_reports, overall_score)
@@ -1708,6 +1837,7 @@ def generate_multi_image_report(
         # ── Section 1: Executive Summary ──────────────────
         "site_summary":           site_summary,
         "executive_summary":      executive_summary,
+        "site_executive_narrative": site_executive_narrative,
         "priority_action":        priority_action,
 
         # ── Section 2: AI Findings bullets ────────────────

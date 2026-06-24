@@ -515,6 +515,77 @@ def _cover_page(data: dict, ST: dict, elements: list):
 
 
 # =========================================================
+# TABLE OF CONTENTS  (new)
+# =========================================================
+def _table_of_contents(data: dict, ST: dict, elements: list):
+    """
+    Static, numbered section listing shown right after the cover page.
+    NOTE: this lists section titles in document order but does not
+    include page numbers — doing that accurately would require
+    switching the document build from a single doc.build() pass to a
+    two-pass multiBuild() with a live TableOfContents flowable (which
+    tracks page numbers via outline entries). That's a build-process
+    change, not a one-line addition, so it's flagged here rather than
+    silently faked with placeholder numbers.
+    """
+    elements.append(Paragraph("Table of Contents", ST["section_heading"]))
+    elements.append(_sp(6))
+
+    toc_items = [
+        "Inspection Metadata",
+        "Executive Dashboard",
+        "Site Health Index",
+        "Executive Risk Summary",
+        "Executive Summary",
+        "AI Findings",
+        "Inspection Intelligence",
+        "Recurring Issue Analysis",
+        "Management Attention",
+        "Risk Matrix",
+        "Department Exposure Dashboard",
+        "Site Intelligence Dashboard",
+        "Image-Wise Inspection Results",
+        "Audit Readiness",
+        "Severity Summary",
+        "Charts",
+        "Compliance Matrix",
+        "Finding Closure Matrix",
+        "Responsible Team Matrix",
+        "Executive Recommendations",
+        "Follow-Up Action Matrix",
+        "Conclusion",
+        "Inspection Certification",
+        "Executive Decision",
+        "Executive Sign-Off",
+        "Appendix",
+    ]
+
+    toc_style = ParagraphStyle(
+        "toc_item", parent=ST["body"], spaceAfter=6,
+    )
+    rows = [
+        [Paragraph(f"{i}.", toc_style), Paragraph(title, toc_style)]
+        for i, title in enumerate(toc_items, 1)
+    ]
+    tbl = Table(rows, colWidths=[CONTENT_W * 0.06, CONTENT_W * 0.94])
+    tbl.setStyle(TableStyle([
+        ("TOPPADDING",    (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+    ]))
+    elements.append(tbl)
+    elements.append(_sp(8))
+    elements.append(Paragraph(
+        "Section order reflects this report's structure; not all "
+        "sections render in every report (e.g. those depending on "
+        "multi-image or recurrence data only appear when applicable).",
+        ST["caption"],
+    ))
+    elements.append(PageBreak())
+
+
+# =========================================================
 # INSPECTION METADATA SECTION  (new — Priority 2)
 # =========================================================
 def _inspection_metadata(data: dict, ST: dict, elements: list):
@@ -701,6 +772,61 @@ def _executive_dashboard(data: dict, ST: dict, elements: list):
 
 
 # =========================================================
+# SITE HEALTH INDEX  (new — Priority: visual score gauge)
+# =========================================================
+def _site_health_index(data: dict, ST: dict, elements: list):
+    """
+    Single-glance visual gauge derived from compliance_score. Distinct
+    from the Compliance Score KPI card in the Executive Dashboard —
+    this is a standalone, large-format block intended as the one
+    number an executive reader takes away from a quick skim.
+    """
+    score = data.get("compliance_score", 0)
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        score = 0
+
+    if score >= 90:
+        rating, bg, fg = "Excellent", CARD_GREEN, CARD_GREEN_B
+    elif score >= 75:
+        rating, bg, fg = "Good", CARD_GREEN, CARD_GREEN_B
+    elif score >= 50:
+        rating, bg, fg = "Fair", CARD_ORANGE, CARD_ORANGE_B
+    else:
+        rating, bg, fg = "Poor", CARD_RED, CARD_RED_B
+
+    label_style = ParagraphStyle(
+        "shi_label", parent=ST["card_title"],
+        textColor=fg, fontSize=10, alignment=TA_CENTER,
+    )
+    score_style = ParagraphStyle(
+        "shi_score", parent=ST["card_value"],
+        textColor=fg, fontSize=30, alignment=TA_CENTER,
+    )
+    rating_style = ParagraphStyle(
+        "shi_rating", parent=ST["card_value"],
+        textColor=fg, fontSize=13, alignment=TA_CENTER,
+    )
+
+    gauge = Table(
+        [[Paragraph("SITE HEALTH INDEX", label_style)],
+         [Paragraph(f"{score:g} / 100", score_style)],
+         [Paragraph(rating, rating_style)]],
+        colWidths=[CONTENT_W],
+    )
+    gauge.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), bg),
+        ("BOX",           (0, 0), (-1, -1), 1.2, fg),
+        ("TOPPADDING",    (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+    ]))
+    elements.append(gauge)
+    elements.append(_sp(14))
+
+
+# =========================================================
 # SEVERITY DISTRIBUTION SUMMARY  (new — Priority 3)
 # =========================================================
 def _severity_summary(data: dict, ST: dict, elements: list):
@@ -837,8 +963,8 @@ def _executive_risk_summary(data: dict, ST: dict, elements: list):
 # =========================================================
 # SECTION 1 — EXECUTIVE SUMMARY
 # =========================================================
-def _executive_summary(data: dict, ST: dict, elements: list):
-    _section_heading(1, "Executive Summary", ST, elements)
+def _executive_summary(data: dict, ST: dict, elements: list, sec_num: int = 1):
+    _section_heading(sec_num, "Executive Summary", ST, elements)
 
     site_summary    = data.get("site_summary",
                                 data.get("executive_summary", ""))
@@ -855,10 +981,23 @@ def _executive_summary(data: dict, ST: dict, elements: list):
 
 
 # =========================================================
-# SECTION 2 — AI FINDINGS
+# SECTION 2 — EXECUTIVE NARRATIVE
 # =========================================================
-def _ai_findings(data: dict, ST: dict, elements: list):
-    _section_heading(2, "AI Findings", ST, elements)
+def _executive_narrative(data: dict, ST: dict, elements: list, sec_num: int):
+    narrative = data.get("site_executive_narrative", "")
+    if not narrative:
+        return
+
+    _section_heading(sec_num, "Executive Narrative", ST, elements)
+    elements.append(Paragraph(narrative, ST["body_justify"]))
+    elements.append(_sp(10))
+
+
+# =========================================================
+# SECTION 3 — AI FINDINGS
+# =========================================================
+def _ai_findings(data: dict, ST: dict, elements: list, sec_num: int = 2):
+    _section_heading(sec_num, "AI Findings", ST, elements)
 
     bullets = data.get("ai_findings_bullets", [])
     if not bullets:
@@ -1354,10 +1493,16 @@ def _detailed_issue_guidance(img_data: dict, sec_num: int,
     for i, f in enumerate(findings, 1):
         sev           = f.get("severity", "Medium")
         issue_lbl     = f.get("issue_type", "Unknown").replace("_", " ").title()
-        finding_id    = f.get("finding_id", f"F-{i:03d}")
+        finding_id    = f.get("finding_id", f"FND-{i:03d}")
         consequences  = f.get("potential_consequences", "—")
         mgmt_impact   = f.get("management_impact", "—")
         risk_category = f.get("risk_category", "—")
+
+        # Standalone Finding ID heading (e.g. FND-001)
+        elements.append(Paragraph(
+            f"<b>{finding_id}</b>",
+            ST["finding_heading"],
+        ))
 
         # Finding header row: title + badge side by side
         hdr_row = Table(
@@ -2167,6 +2312,76 @@ def _readiness_certificate(data: dict, ST: dict, elements: list):
 
 
 # =========================================================
+# EXECUTIVE DECISION BLOCK  (new)
+# =========================================================
+def _executive_decision(data: dict, ST: dict, elements: list):
+    """
+    Checkbox-style decision block for the approving authority, shown
+    after the readiness certificate and before formal sign-off lines.
+    The pre-selected option (if any) is marked from
+    data['executive_decision']; all four remain visible either way
+    since this is a printed form, not a rendered decision.
+
+    Boxes are drawn shapes (Drawing/Rect), not the ☐/☒ Unicode glyphs —
+    Helvetica's font encoding doesn't include those code points, so
+    ReportLab silently renders both as the same solid glyph, making a
+    selected option visually indistinguishable from an unselected one.
+    """
+    elements.append(Paragraph("Executive Decision", ST["section_heading"]))
+    elements.append(_sp(4))
+
+    selected = (data.get("executive_decision") or "").strip().lower()
+
+    options = [
+        ("approved",                "Approved"),
+        ("conditionally_approved",  "Conditionally Approved"),
+        ("reinspection_required",   "Reinspection Required"),
+        ("immediate_action",        "Immediate Corrective Action Required"),
+    ]
+
+    def _checkbox(is_checked: bool):
+        box_size = 11
+        d = Drawing(box_size + 2, box_size + 2)
+        d.add(Rect(
+            1, 1, box_size, box_size,
+            strokeColor=INK_LIGHT, strokeWidth=1,
+            fillColor=(BLUE_ACCENT if is_checked else WHITE),
+        ))
+        if is_checked:
+            # Simple checkmark made of two short diagonal lines
+            d.add(Line(2.5, 6, 5, 2.5, strokeColor=WHITE, strokeWidth=1.6))
+            d.add(Line(5, 2.5, 10.5, 9.5, strokeColor=WHITE, strokeWidth=1.6))
+        return d
+
+    box_style = ParagraphStyle(
+        "decision_box", parent=ST["body"], fontSize=11,
+    )
+    rows = []
+    for key, label in options:
+        is_checked = (key == selected)
+        label_style = (
+            ParagraphStyle("decision_box_sel", parent=box_style,
+                           fontName="Helvetica-Bold")
+            if is_checked else box_style
+        )
+        rows.append([_checkbox(is_checked), Paragraph(label, label_style)])
+
+    tbl = Table(rows, colWidths=[24, CONTENT_W - 24])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), CARD_BG),
+        ("BOX",           (0, 0), (-1, -1), 0.8, BORDER),
+        ("TOPPADDING",    (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING",   (0, 0), (0, -1),  14),
+        ("LEFTPADDING",   (1, 0), (1, -1),  6),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEBELOW",     (0, 0), (-1, -2), 0.4, BORDER),
+    ]))
+    elements.append(KeepTogether(tbl))
+    elements.append(_sp(14))
+
+
+# =========================================================
 # APPENDIX  (new — Priority 10)
 # =========================================================
 def _appendix(data: dict, ST: dict, elements: list):
@@ -2249,10 +2464,19 @@ def _make_footer(report_id: str, gen_date: str):
 
     def draw_footer(canvas, doc):
         canvas.saveState()
+
+        canvas.setFont("Helvetica-Bold", 7)
+        canvas.setFillColor(INK_LIGHT)
+        canvas.drawCentredString(
+            PAGE_W / 2.0, MARGIN / 2 + 9,
+            "Generated by InfraGuard Enterprise AI  •  Confidential Internal Document",
+        )
+
         canvas.setFont("Helvetica", 8)
         canvas.setFillColor(INK_LIGHT)
         footer_text = f"{report_id}   |   {gen_date}   |   Page {doc.page}"
         canvas.drawCentredString(PAGE_W / 2.0, MARGIN / 2, footer_text)
+
         canvas.restoreState()
 
     return draw_footer
@@ -2296,6 +2520,9 @@ def generate_quality_pdf(report_data: dict, output_path: str) -> None:
     # ── Priority 1: Cover Page ─────────────────────────────
     _cover_page(report_data, ST, elements)
 
+    # ── Table of Contents ──────────────────────────────────
+    _table_of_contents(report_data, ST, elements)
+
     # ── Title block ───────────────────────────────────────
     _title_block(report_data, ST, elements)
 
@@ -2305,16 +2532,24 @@ def generate_quality_pdf(report_data: dict, output_path: str) -> None:
     # ── Executive Dashboard ───────────────────────────────
     _executive_dashboard(report_data, ST, elements)
 
+    # ── Site Health Index gauge ───────────────────────────
+    _site_health_index(report_data, ST, elements)
+
     # ── Priority 4: Executive Risk Summary ────────────────
     _executive_risk_summary(report_data, ST, elements)
 
     # ── Section 1: Executive Summary ──────────────────────
-    _executive_summary(report_data, ST, elements)
+    _executive_summary(report_data, ST, elements, sec_num=1)
     sec = 2
 
-    # ── Section 2: AI Findings ────────────────────────────
-    _ai_findings(report_data, ST, elements)
-    sec = 3
+    # ── Section 2: Executive Narrative (Priority 4) ───────
+    if report_data.get("site_executive_narrative"):
+        _executive_narrative(report_data, ST, elements, sec_num=sec)
+        sec += 1
+
+    # ── Section: AI Findings ──────────────────────────────
+    _ai_findings(report_data, ST, elements, sec_num=sec)
+    sec += 1
 
     # ── Inspection Intelligence ───────────────────────────
     if any(report_data.get(k) for k in (
@@ -2410,6 +2645,9 @@ def generate_quality_pdf(report_data: dict, output_path: str) -> None:
 
     # ── Priority 9: Report Readiness Certificate ──────────
     _readiness_certificate(report_data, ST, elements)
+
+    # ── Executive Decision Block ──────────────────────────
+    _executive_decision(report_data, ST, elements)
 
     # ── Executive Sign-Off Page ───────────────────────────
     _executive_signoff(report_data, ST, elements)

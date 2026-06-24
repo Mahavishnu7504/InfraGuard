@@ -409,14 +409,6 @@ async def download_report(
 
         report_id = uuid.uuid4().hex
 
-        pdf_name = (
-            f"report_{report_id}.pdf"
-        )
-
-        pdf_path = (
-            REPORT_DIR / pdf_name
-        )
-
         # --------------------------------------------------
         # Normalise frontend payload shape → pdf_service schema
         #
@@ -454,10 +446,63 @@ async def download_report(
                 ),
             })
 
+        # --------------------------------------------------
+        # Upgrade 2: Report versioning
+        # --------------------------------------------------
+        report_version = "1.0"
+
+        # --------------------------------------------------
+        # Upgrade 5: Audit timestamp
+        # --------------------------------------------------
+        audit_generated_at = datetime.utcnow().isoformat()
+
         report_data = {
             **payload,
+
+            # Upgrade 1: Inspection metadata
+            "project_name":     payload.get("project_name"),
+            "site_location":    payload.get("site_location"),
+            "inspector_name":   payload.get("inspector_name"),
+            "client_name":      payload.get("client_name"),
+            "project_phase":    payload.get("project_phase"),
+            "contractor":       payload.get("contractor"),
+            "review_status":    payload.get("review_status"),
+
+            # Upgrade 2: Versioning
+            "revision":         report_version,
+
+            # Upgrade 3: Executive approval fields
+            "prepared_by":      payload.get("prepared_by"),
+            "reviewed_by":      payload.get("reviewed_by"),
+            "approved_by":      payload.get("approved_by"),
+
+            # Upgrade 5: Audit timestamp
+            "audit_generated_at": audit_generated_at,
+
             "image_reports": image_reports,
         }
+
+        # --------------------------------------------------
+        # Upgrade 4: Dynamic PDF name
+        # Uses inspection_id when available, falls back to
+        # project_name + date, then the generic report_id.
+        # --------------------------------------------------
+        inspection_id = payload.get("inspection_id")
+        project_name  = payload.get("project_name")
+
+        if inspection_id:
+            pdf_name = f"InfraGuard_QA_{inspection_id}.pdf"
+        elif project_name:
+            date_str = datetime.utcnow().strftime("%Y%m%d")
+            safe_name = "".join(
+                c if c.isalnum() else "_"
+                for c in project_name
+            )
+            pdf_name = f"InfraGuard_{safe_name}_{date_str}.pdf"
+        else:
+            pdf_name = f"InfraGuard_QA_{report_id}.pdf"
+
+        pdf_path = REPORT_DIR / pdf_name
 
         generate_quality_pdf(
 
@@ -479,9 +524,7 @@ async def download_report(
 
             path=str(pdf_path),
 
-            filename=(
-                "InfraGuard_Quality_Report.pdf"
-            ),
+            filename=pdf_name,
 
             media_type="application/pdf"
         )
