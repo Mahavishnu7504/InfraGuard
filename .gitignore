@@ -55,7 +55,6 @@ media/annotated_evidence/
 Thumbs.db
 
 #test files
-test_model.py
+
 helmet.jpg
 wall.jpg
-test_ppe.py

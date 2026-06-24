@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import {
     FaHistory, FaShieldAlt, FaClock,
     FaDatabase, FaSearch, FaFilter,
+    FaExclamationTriangle, FaCheckCircle,
 } from "react-icons/fa";
 
 import PageLayout from "../components/PageLayout";
@@ -16,6 +17,18 @@ function PDot() {
 const ITEM_CLS = { HIGH: "hp__item--high", MEDIUM: "hp__item--medium", LOW: "hp__item--low" };
 const itemCls = (r) => ITEM_CLS[(r || "LOW").toUpperCase()] || ITEM_CLS.LOW;
 
+function formatDate(timestamp) {
+    const ts = new Date(timestamp + "Z");
+    return ts.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function formatTime(timestamp) {
+    const ts = new Date(timestamp + "Z");
+    return ts.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+const TODAY = new Date().toDateString();
+
 export default function HistoryPage() {
     const [search, setSearch] = useState("");
     const [riskFilter, setRiskFilter] = useState("ALL");
@@ -23,6 +36,7 @@ export default function HistoryPage() {
     const [incidents, setIncidents] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [lastRefresh, setLastRefresh] = useState(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -33,9 +47,10 @@ export default function HistoryPage() {
                 if (!cancelled) {
                     setIncidents(Array.isArray(data) ? data : []);
                     setError(null);
+                    setLastRefresh(new Date());
                 }
             } catch (err) {
-                if (!cancelled) setError("Unable to load incident history");
+                if (!cancelled) setError("Unable to load incident history. Check your connection and try again.");
             } finally {
                 if (!cancelled) setLoading(false);
             }
@@ -49,6 +64,18 @@ export default function HistoryPage() {
             clearInterval(iv);
         };
     }, []);
+
+    // Single pass — derive all counts at once to avoid repeated filters
+    const counts = useMemo(() => {
+        let high = 0, medium = 0, low = 0, today = 0;
+        for (const x of incidents) {
+            if (x.risk_level === "HIGH") high++;
+            else if (x.risk_level === "MEDIUM") medium++;
+            else low++;
+            if (new Date(x.timestamp + "Z").toDateString() === TODAY) today++;
+        }
+        return { high, medium, low, today, total: incidents.length };
+    }, [incidents]);
 
     const filteredData = useMemo(() => {
         const query = search.toLowerCase();
@@ -79,24 +106,22 @@ export default function HistoryPage() {
                         <h1 className="hp__h1"><FaHistory /> Safety Incident<span className="hp__accent"> History</span></h1>
                         <p className="hp__sub">Enterprise forensic event timeline</p>
                     </div>
-                    <div className="hp__status"><FaShieldAlt /> AI VERIFIED</div>
+                    <div className="hp__hdr-right">
+                        <div className="hp__status"><FaShieldAlt /> AI VERIFIED</div>
+                        {lastRefresh && (
+                            <div className="hp__refresh-note">
+                                <PDot /> Auto-refresh every 30s · Last: {formatTime(lastRefresh.toISOString().replace("Z", ""))}
+                            </div>
+                        )}
+                    </div>
                 </motion.div>
 
-                {/* KPI */}
+                {/* KPI — primary stats */}
                 <div className="hp__kpis">
                     {[
-                        { icon: <FaDatabase />, label: "Total Records", val: incidents.length },
-                        {
-                            icon: <FaShieldAlt />, label: "High Risk Events",
-                            val: incidents.filter(x => x.risk_level === "HIGH").length
-                        },
-                        {
-                            icon: <FaClock />, label: "Today's Events",
-                            val: incidents.filter(x => {
-                                const ts = new Date(x.timestamp + "Z");
-                                return ts.toDateString() === new Date().toDateString();
-                            }).length
-                        },
+                        { icon: <FaDatabase />, label: "Total Records", val: counts.total },
+                        { icon: <FaShieldAlt />, label: "High Risk Events", val: counts.high },
+                        { icon: <FaClock />, label: "Today's Events", val: counts.today },
                     ].map((k, i) => (
                         <motion.div key={i} className="hp__kpi"
                             initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
@@ -111,14 +136,14 @@ export default function HistoryPage() {
                     ))}
                 </div>
 
-                {/* RISK SUMMARY */}
+                {/* RISK SUMMARY — colour-coded */}
                 <div className="hp__kpis">
                     {[
-                        { icon: <FaShieldAlt />, label: "High", val: incidents.filter(x => x.risk_level === "HIGH").length },
-                        { icon: <FaShieldAlt />, label: "Medium", val: incidents.filter(x => x.risk_level === "MEDIUM").length },
-                        { icon: <FaShieldAlt />, label: "Low", val: incidents.filter(x => x.risk_level === "LOW").length },
+                        { icon: <FaExclamationTriangle />, label: "High", val: counts.high, mod: "hp__kpi--high" },
+                        { icon: <FaShieldAlt />, label: "Medium", val: counts.medium, mod: "hp__kpi--medium" },
+                        { icon: <FaCheckCircle />, label: "Low", val: counts.low, mod: "hp__kpi--low" },
                     ].map((k, i) => (
-                        <motion.div key={i} className="hp__kpi"
+                        <motion.div key={i} className={`hp__kpi ${k.mod}`}
                             initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: 0.21 + i * 0.07 }}
                         >
@@ -136,7 +161,7 @@ export default function HistoryPage() {
                     <div className="hp__search">
                         <FaSearch />
                         <input
-                            type="text" placeholder="Search incidents..."
+                            type="text" placeholder="Search by event type, description, or camera ID..."
                             value={search} onChange={e => setSearch(e.target.value)}
                         />
                     </div>
@@ -154,9 +179,9 @@ export default function HistoryPage() {
                 {/* TIMELINE */}
                 <div className="hp__timeline">
                     {loading
-                        ? <div className="hp__empty">Loading Incident History...</div>
+                        ? <div className="hp__empty">Loading incident history…</div>
                         : error
-                            ? <div className="hp__empty">{error}</div>
+                            ? <div className="hp__empty hp__empty--error">{error}</div>
                             : sortedData.length > 0
                                 ? sortedData.map((item, i) => (
                                     <motion.div
@@ -169,15 +194,17 @@ export default function HistoryPage() {
                                         <div className="hp__item-dot" />
                                         <div className="hp__item-main">
                                             <h3>{item.event_type}</h3>
-                                            <p>{item.description}</p>
+                                            <p>{item.description || "No description available"}</p>
                                         </div>
                                         <div className="hp__item-side">
                                             <span className="hp__risk">{item.risk_level}</span>
-                                            <small>CAM-{item.camera_id} · {new Date(item.timestamp + "Z").toLocaleTimeString()}</small>
+                                            <small className="hp__item-cam">CAM-{item.camera_id}</small>
+                                            <small>{formatDate(item.timestamp)}</small>
+                                            <small>{formatTime(item.timestamp)}</small>
                                         </div>
                                     </motion.div>
                                 ))
-                                : <div className="hp__empty">No matching incidents found</div>
+                                : <div className="hp__empty">No incidents match your search. Try adjusting the filters.</div>
                     }
                 </div>
 

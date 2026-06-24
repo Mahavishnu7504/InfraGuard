@@ -171,7 +171,10 @@
     border: 1px solid var(--border);
     position: relative;
     overflow: hidden;
-    transition: all 0.22s;
+    transition:
+        transform 0.22s ease,
+        border-color 0.22s ease,
+        box-shadow 0.22s ease;
 }
 
 .hp__kpi::before {
@@ -347,6 +350,7 @@
     border: 1px solid var(--ic, var(--border));
     color: var(--ic, var(--tx2));
     background: color-mix(in srgb, var(--ic, transparent) 12%, transparent);
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.05);
 }
 
 .hp__item-side small {
@@ -354,6 +358,62 @@
     font-size: 0.6rem;
     color: var(--tx2);
     letter-spacing: 0.04em;
+}
+
+/* HEADER RIGHT */
+.hp__hdr-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.hp__refresh-note {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--mono);
+    font-size: 0.58rem;
+    color: var(--tx2);
+    letter-spacing: 0.06em;
+}
+
+/* RISK-COLOURED KPI CARDS */
+.hp__kpi--high {
+    --kpi-c: var(--r);
+}
+
+.hp__kpi--medium {
+    --kpi-c: var(--y);
+}
+
+.hp__kpi--low {
+    --kpi-c: var(--g);
+}
+
+.hp__kpi--high .hp__kpi-icon,
+.hp__kpi--medium .hp__kpi-icon,
+.hp__kpi--low .hp__kpi-icon {
+    background: color-mix(in srgb, var(--kpi-c) 12%, transparent);
+    color: var(--kpi-c);
+}
+
+.hp__kpi--high::before {
+    background: linear-gradient(90deg, transparent, var(--r), transparent);
+}
+
+.hp__kpi--medium::before {
+    background: linear-gradient(90deg, transparent, var(--y), transparent);
+}
+
+.hp__kpi--low::before {
+    background: linear-gradient(90deg, transparent, var(--g), transparent);
+}
+
+/* ITEM SIDE — multi-line */
+.hp__item-cam {
+    color: var(--tx1);
+    font-weight: 700;
 }
 
 /* EMPTY */
@@ -367,6 +427,11 @@
     font-size: 0.72rem;
     color: var(--tx2);
     letter-spacing: 0.08em;
+}
+
+.hp__empty--error {
+    border-color: rgba(239, 68, 68, 0.25);
+    color: var(--r);
 }
 
 /* RESPONSIVE */
@@ -387,5 +452,11 @@
 
     .hp__item {
         flex-wrap: wrap;
+    }
+
+    .hp__item-side {
+        width: 100%;
+        align-items: flex-start;
+        text-align: left;
     }
 }
