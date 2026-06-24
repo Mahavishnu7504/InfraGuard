@@ -53,3 +53,9 @@ media/annotated_evidence/
 # OS
 .DS_Store
 Thumbs.db
+
+#test files
+test_model.py
+helmet.jpg
+wall.jpg
+test_ppe.py
