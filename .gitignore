@@ -1,29 +1,46 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 
 # Virtual Environments
 .venv/
 venv/
 env/
+ENV/
+
+# Python Cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Logs
+logs/
 *.log
+
+# Environment Variables
+.env
+.env.*
+!.env.example
 
 # Node
 node_modules/
-
-# Build
 dist/
 build/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # YOLO
 runs/
 wandb/
 outputs/
-logs/
 
 # Dataset
 datasets/
@@ -35,11 +52,10 @@ data/
 *.engine
 *.weights
 
-# Generated images
+# Generated Files
 generated/
+generated_reports/
 backend/static/quality_outputs/
-
-# Generated Uploads
 backend/uploads/
 media/annotated_evidence/
 
@@ -49,12 +65,27 @@ media/annotated_evidence/
 # IDE
 .vscode/
 .idea/
+*.code-workspace
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
-#test files
+# Temporary Files
+*.tmp
+*.temp
+*.bak
+*.swp
 
+# Repository Audit Files
+AIEngineStructure.txt
+BackendStructure.txt
+FrontendStructure.txt
+ProjectStructure.txt
+project_tree.txt
+project_structure.txt
+
+# Test Files
 helmet.jpg
 wall.jpg

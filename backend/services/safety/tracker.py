@@ -2,8 +2,29 @@ import math
 import uuid
 import time
 
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
 
 class EnterpriseTracker:
+    """
+    Simple multi-object tracker using global nearest-neighbor assignment
+    (Hungarian algorithm) instead of greedy per-detection matching.
+
+    Why global assignment instead of greedy matching:
+    Greedy "for each detection, pick the closest free track" assignment
+    is order-dependent. When two tracked objects cross paths or come
+    close together, a detection processed earlier can steal the track
+    that "belongs" to a detection processed later, causing an ID swap.
+    Solving the full assignment problem (minimizing total distance
+    across all detection-track pairs simultaneously) avoids this.
+
+    Note on max_missing:
+    This is compared against `time.time()` deltas, so it is a number
+    of SECONDS a track may go undetected before being dropped, not a
+    number of frames. If you want frame-count semantics instead, pass
+    in a frame counter rather than wall-clock time.
+    """
 
     def __init__(
         self,
@@ -37,11 +58,48 @@ class EnterpriseTracker:
 
     def _distance(self, c1, c2):
 
-        return math.sqrt(
-
-            (c1[0] - c2[0]) ** 2 +
-            (c1[1] - c2[1]) ** 2
+        return math.hypot(
+            c1[0] - c2[0],
+            c1[1] - c2[1]
         )
+
+    # =====================================
+    # ASSIGNMENT (Hungarian / global nearest-neighbor)
+    # =====================================
+
+    def _assign(self, det_centers, track_ids):
+        """
+        Solve the assignment problem between detections and existing
+        tracks, minimizing total distance. Returns a dict mapping
+        detection index -> track_id for every match that is within
+        max_distance. Detections/tracks with no acceptable match are
+        simply absent from the returned dict.
+        """
+
+        if not det_centers or not track_ids:
+            return {}
+
+        cost = np.zeros(
+            (len(det_centers), len(track_ids))
+        )
+
+        for i, center in enumerate(det_centers):
+            for j, track_id in enumerate(track_ids):
+                cost[i, j] = self._distance(
+                    center,
+                    self.tracks[track_id]["center"]
+                )
+
+        det_idx, track_idx = linear_sum_assignment(cost)
+
+        matches = {}
+
+        for d_i, t_i in zip(det_idx, track_idx):
+
+            if cost[d_i, t_i] < self.max_distance:
+                matches[d_i] = track_ids[t_i]
+
+        return matches
 
     # =====================================
     # UPDATE
@@ -56,9 +114,13 @@ class EnterpriseTracker:
 
         updated_tracks = {}
 
-        assigned = set()
+        # Pre-filter detections with valid bboxes, keep original
+        # detections list intact (including invalid ones) since
+        # we still return the full `detections` list at the end.
+        valid_indices = []
+        det_centers = []
 
-        for det in detections:
+        for i, det in enumerate(detections):
 
             bbox = det.get(
                 "bbox",
@@ -68,48 +130,46 @@ class EnterpriseTracker:
             if len(bbox) != 4:
                 continue
 
-            center = self._center(
-                bbox
+            valid_indices.append(i)
+            det_centers.append(
+                self._center(bbox)
             )
 
-            matched_id = None
+        track_ids = list(self.tracks.keys())
 
-            best_distance = (
-                self.max_distance
-            )
+        matches = self._assign(
+            det_centers,
+            track_ids
+        )
 
-            for track_id, track in self.tracks.items():
+        assigned_track_ids = set(
+            matches.values()
+        )
 
-                if track_id in assigned:
-                    continue
+        for local_i, original_i in enumerate(valid_indices):
 
-                dist = self._distance(
+            det = detections[original_i]
+            bbox = det.get("bbox")
+            center = det_centers[local_i]
 
-                    center,
-
-                    track["center"]
-                )
-
-                if dist < best_distance:
-
-                    matched_id = track_id
-
-                    best_distance = dist
+            matched_id = matches.get(local_i)
 
             # =================================
             # EXISTING TRACK
             # =================================
 
-            if matched_id:
+            if matched_id is not None:
 
                 track = self.tracks[
                     matched_id
                 ]
 
+                # Copy before mutating so the old track dict (if
+                # referenced elsewhere) isn't mutated in place.
                 trajectory = track.get(
                     "trajectory",
                     []
-                )
+                )[:]
 
                 trajectory.append(
                     center
@@ -154,10 +214,6 @@ class EnterpriseTracker:
                     "frames":
                         frames
                 }
-
-                assigned.add(
-                    matched_id
-                )
 
                 det["track_id"] = (
                     matched_id
@@ -223,7 +279,7 @@ class EnterpriseTracker:
 
         for track_id, track in self.tracks.items():
 
-            if track_id in updated_tracks:
+            if track_id in assigned_track_ids:
                 continue
 
             last_seen = track.get(
