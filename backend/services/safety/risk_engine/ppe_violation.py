@@ -1,87 +1,98 @@
 from typing import List, Dict
 
-# PPE categories
-CRITICAL_PPE = {"helmet", "vest"}
-IMPORTANT_PPE = {"goggles", "gloves"}
-
-def iou(boxA, boxB):
-    """Intersection over Union of two boxes"""
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
-
-    interArea = max(0, xB - xA) * max(0, yB - yA)
-    if interArea == 0:
-        return 0.0
-
-    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-
-    return interArea / float(boxAArea + boxBArea - interArea)
+from backend.services.risk_engine.rules import (
+    CRITICAL_PPE,
+    IMPORTANT_PPE,
+    compute_iou,
+    normalize_class_name,
+)
 
 
-def associate_ppe_to_person(person_box, ppe_boxes, iou_thresh=0.1):
-    """Assign PPE items to a person based on IoU"""
+def associate_ppe_to_person(
+        person_box: List[float],
+        ppe_boxes: List[Dict],
+        iou_thresh: float = 0.1
+) -> set:
+    """
+    Assign PPE items to a person based on IoU overlap.
+
+    Expects each item in ppe_boxes to have:
+        "class_name"  (str)  — raw or canonical YOLO label
+        "bbox"        (list) — [x1, y1, x2, y2]
+    """
     assigned = set()
+
     for ppe in ppe_boxes:
-        if iou(person_box, ppe["box"]) >= iou_thresh:
-            assigned.add(ppe["class"])
+        if compute_iou(person_box, ppe["bbox"]) >= iou_thresh:
+            assigned.add(normalize_class_name(ppe["class_name"]))
+
     return assigned
 
 
-def detect_ppe_violations(detections: List[Dict]):
+def detect_ppe_violations(detections: List[Dict]) -> Dict:
     """
-    detections = [
-      { "class": "person", "box": [...] },
-      { "class": "helmet", "box": [...] },
-      ...
-    ]
+    Evaluate per-person PPE compliance for a single frame.
+
+    Expects detections as:
+        [
+          { "class_name": "person",  "bbox": [x1, y1, x2, y2], "track_id": "..." },
+          { "class_name": "helmet",  "bbox": [x1, y1, x2, y2] },
+          ...
+        ]
+
+    Returns:
+        {
+          "image_risk": "HIGH" | "MEDIUM" | "LOW",
+          "persons": [ { per-person result }, ... ],
+          "reason":  str   (only present when no persons detected)
+        }
     """
-
-    persons = [d for d in detections if d["class"] == "person"]
-    ppe_items = [d for d in detections if d["class"] != "person"]
-
-    results = []
-    image_risk = "LOW"
+    persons   = [d for d in detections if normalize_class_name(d["class_name"]) == "person"]
+    ppe_items = [d for d in detections if normalize_class_name(d["class_name"]) != "person"]
 
     if not persons:
         return {
             "image_risk": "LOW",
-            "persons": [],
-            "reason": "No person detected"
+            "persons":    [],
+            "reason":     "No person detected",
         }
 
-    for idx, person in enumerate(persons):
-        assigned_ppe = associate_ppe_to_person(person["box"], ppe_items)
+    results    = []
+    image_risk = "LOW"
 
-        missing_critical = CRITICAL_PPE - assigned_ppe
+    for idx, person in enumerate(persons):
+
+        assigned_ppe = associate_ppe_to_person(person["bbox"], ppe_items)
+
+        missing_critical  = CRITICAL_PPE  - assigned_ppe
         missing_important = IMPORTANT_PPE - assigned_ppe
 
         if missing_critical:
-            risk = "HIGH"
-            reason = f"Missing critical PPE: {', '.join(missing_critical)}"
+            risk   = "HIGH"
+            reason = f"Missing critical PPE: {', '.join(sorted(missing_critical))}"
         elif missing_important:
-            risk = "MEDIUM"
-            reason = f"Missing important PPE: {', '.join(missing_important)}"
+            risk   = "MEDIUM"
+            reason = f"Missing important PPE: {', '.join(sorted(missing_important))}"
         else:
-            risk = "LOW"
+            risk   = "LOW"
             reason = "All required PPE detected"
 
-        results.append({
-            "person_id": idx,
-            "risk": risk,
-            "assigned_ppe": list(assigned_ppe),
-            "reason": reason
-        })
-
-        # Escalate image risk
+        # Escalate image-level risk
         if risk == "HIGH":
             image_risk = "HIGH"
         elif risk == "MEDIUM" and image_risk != "HIGH":
             image_risk = "MEDIUM"
 
+        results.append({
+            "person_id":    idx,
+            "track_id":     person.get("track_id"),
+            "risk":         risk,
+            "missing":      sorted(missing_critical | missing_important),
+            "assigned_ppe": sorted(assigned_ppe),
+            "reason":       reason,
+        })
+
     return {
         "image_risk": image_risk,
-        "persons": results
+        "persons":    results,
     }

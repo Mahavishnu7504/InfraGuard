@@ -122,6 +122,26 @@ except Exception:
     pass
 
 
+def _extract_detections(result):
+    """
+    Compatibility layer for predictor return types.
+
+    Supports:
+    - old predictor -> list[dict]
+    - new predictor -> PredictionResult(detections=[...], metadata={...})
+    """
+    if hasattr(result, "detections"):
+        return result.detections
+    if isinstance(result, list):
+        return result
+    return []
+
+
+def _extract_metadata(result) -> dict:
+    """Companion to _extract_detections: pulls metadata when present, else {}."""
+    return getattr(result, "metadata", {}) or {}
+
+
 def _pool_idx(camera_id: str) -> int:
     """Issue 3 fix: stable pool slot via hashlib.md5 — survives process restarts."""
     return int(hashlib.md5(camera_id.encode()).hexdigest(), 16) % MAX_PREDICTOR_POOL
@@ -151,32 +171,48 @@ def _safe_crack_predict(camera_id: str, frame) -> list:
         return _crack_predictor_pool[idx].predict_frame(frame)
 
 
-def _recover_infra_predictor(camera_id: str) -> None:
-    """Fix 13: Replace a crashed pool slot with a fresh instance."""
+def _recover_infra_predictor(camera_id: str) -> bool:
+    """Fix 13: Replace a crashed pool slot with a fresh instance. Returns True on success."""
     idx = _pool_idx(camera_id)
     with _predictor_lock:
         try:
             _infra_predictor_pool[idx] = InfraGuardPredictor()
             logger.info("Recovered infra predictor slot %d for camera %s", idx, camera_id)
+            return True
         except Exception:
             logger.exception("Failed to recover infra predictor slot %d", idx)
+            return False
 
 
-def _recover_crack_predictor(camera_id: str) -> None:
-    """Fix 13: Replace a crashed crack pool slot with a fresh instance."""
+def _recover_crack_predictor(camera_id: str) -> bool:
+    """Fix 13: Replace a crashed crack pool slot with a fresh instance. Returns True on success."""
     idx = _pool_idx(camera_id)
     with _predictor_lock:
         try:
             _crack_predictor_pool[idx] = CrackPredictor()
             logger.info("Recovered crack predictor slot %d for camera %s", idx, camera_id)
+            return True
         except Exception:
             logger.exception("Failed to recover crack predictor slot %d", idx)
+            return False
 
 # ── Mod 5: Person tracker only (cracks / equipment have their own) ───────────
-person_tracker = EnterpriseTracker()
+# Item T: tracker construction is defensive — a tracker backend outage at
+# import time must not take down the whole pipeline module. We log and
+# continue with tracker=None; call sites below check for this and skip
+# tracking (with a warning) rather than crash.
+try:
+    person_tracker = EnterpriseTracker()
+except Exception:
+    logger.exception("Failed to construct person_tracker — tracking disabled for persons.")
+    person_tracker = None
 
 # ── Mod 6: Dedicated equipment tracker (enables movement/zone/near-miss) ─────
-equipment_tracker = EnterpriseTracker()
+try:
+    equipment_tracker = EnterpriseTracker()
+except Exception:
+    logger.exception("Failed to construct equipment_tracker — tracking disabled for equipment.")
+    equipment_tracker = None
 
 alert_manager = AlertManager(
     cooldown=10
@@ -293,7 +329,10 @@ heatmap_lock   = RLock()
 # ── Mod 12: Pipeline version — included in every frame result ────────────────
 PIPELINE_VERSION = "2.0.0"
 
-# Fix 10: Model health monitoring — dashboard can surface FAILED status.
+# Fix 10: Model health monitoring — dashboard can surface ONLINE / RECOVERING / FAILED.
+# RECOVERING: a predictor call just failed and a pool-slot replacement is in
+#             flight; ONLINE resumes automatically on the next successful call.
+# FAILED:     the replacement attempt itself did not produce a working instance.
 model_health: Dict[str, object] = {
     "infra_status": "ONLINE",
     "crack_status": "ONLINE",
@@ -683,15 +722,35 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             "safety_score": 100.0,
             "skipped_frame": True,
             "analytics": {
+                "frame_id":         _frame_counters.get(camera_id, 0),   # [Item Q]
                 "total_objects":    len(cached),
                 "processing_ms":    processing_ms,
                 "predict_ms":       0,
                 "fps":              0,
-                "tracker_active":   True,
+                # [Item T] Real availability, not a hardcoded True.
+                "tracker_active":   (person_tracker is not None) or (equipment_tracker is not None),
                 "class_counts":     {},
                 "ppe_compliance": {"overall": 100.0, "helmet": 100.0, "vest": 100.0, "worker_count": 0},
                 "camera_id":        camera_id,
                 "timestamp":        frame_ts,
+                # [Item R] No inference ran this frame — all stages 0.0.
+                "stage_timing_ms": {
+                    "detection": 0.0,
+                    "tracking":  0.0,
+                    "analytics": 0.0,
+                    "drawing":   0.0,
+                    "total":     processing_ms,
+                },
+                "model_metadata": {"infra": {}, "crack": {}},
+                "ai_metadata": {
+                    "engine":         "dual-model-yolo",
+                    "models":         ["infraguard", "crack"],
+                    "model_versions": {"infraguard": "unknown", "crack": "unknown"},
+                    "device":         "cuda" if _CUDA_AVAILABLE else "cpu",
+                    "processing_ms":  processing_ms,
+                    "predict_ms":     0,
+                    "fps":            0,
+                },
             },
         }
 
@@ -712,51 +771,67 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             crack_future = None
 
         try:
-            infra_raw = infra_future.result()
+            infra_result = infra_future.result()
+            # Compatibility unwrap: old predictors return list[dict] directly;
+            # new predictors return PredictionResult(detections=..., metadata=...).
+            infra_raw = _extract_detections(infra_result)
+            infra_metadata = _extract_metadata(infra_result)
             model_health["infra_status"] = "ONLINE"   # Fix 10
             _model_failure_counts["infra"] = 0        # reset on success
         except Exception as ie:
-            model_health["infra_status"] = "FAILED"   # Fix 10
             model_health["last_error"]   = str(ie)
             _model_failure_counts["infra"] += 1
             logger.exception(
                 "Infra predictor failed for camera %s (failure #%d)",
                 camera_id, _model_failure_counts["infra"],
             )
+            # Item S: a single failure is treated as RECOVERING while we
+            # attempt to replace the pool slot. It escalates to FAILED only
+            # if that recovery attempt itself fails to produce a working
+            # predictor instance.
+            model_health["infra_status"] = "RECOVERING"   # Fix 10
             # Priority 1 #4: replace pool slot after repeated failures
             if _model_failure_counts["infra"] >= _MODEL_FAILURE_THRESHOLD:
                 logger.warning(
                     "Infra predictor slot %d exceeded failure threshold — replacing.",
                     _pool_idx(camera_id),
                 )
-                _recover_infra_predictor(camera_id)
+                recovered = _recover_infra_predictor(camera_id)
                 _model_failure_counts["infra"] = 0
             else:
-                _recover_infra_predictor(camera_id)   # Fix 13: always attempt recovery
+                recovered = _recover_infra_predictor(camera_id)   # Fix 13: always attempt recovery
+            if not recovered:
+                model_health["infra_status"] = "FAILED"   # Fix 10
             raise
 
         if crack_future is not None:
             try:
-                crack_raw = crack_future.result()
+                crack_result = crack_future.result()
+                # Compatibility unwrap (same as infra above).
+                crack_raw = _extract_detections(crack_result)
+                crack_metadata = _extract_metadata(crack_result)
                 model_health["crack_status"] = "ONLINE"   # Fix 10
                 _model_failure_counts["crack"] = 0
             except Exception as ce:
-                model_health["crack_status"] = "FAILED"   # Fix 10
                 model_health["last_error"]   = str(ce)
                 _model_failure_counts["crack"] += 1
                 logger.exception(
                     "Crack predictor failed for camera %s (failure #%d)",
                     camera_id, _model_failure_counts["crack"],
                 )
+                # Item S: same RECOVERING → FAILED escalation as infra above.
+                model_health["crack_status"] = "RECOVERING"   # Fix 10
                 if _model_failure_counts["crack"] >= _MODEL_FAILURE_THRESHOLD:
                     logger.warning(
                         "Crack predictor slot %d exceeded failure threshold — replacing.",
                         _pool_idx(camera_id),
                     )
-                    _recover_crack_predictor(camera_id)
+                    recovered = _recover_crack_predictor(camera_id)
                     _model_failure_counts["crack"] = 0
                 else:
-                    _recover_crack_predictor(camera_id)   # Fix 13
+                    recovered = _recover_crack_predictor(camera_id)   # Fix 13
+                if not recovered:
+                    model_health["crack_status"] = "FAILED"   # Fix 10
                 raise
         else:
             # Reuse previously cached crack detections for this skipped crack frame
@@ -764,6 +839,7 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
                 d for d in last_detections.get(camera_id, [])
                 if d.get("model_source") == "crack"
             ]
+            crack_metadata = {}   # no fresh predictor call this frame
 
         predict_ms = round((time.time() - predict_start) * 1000, 2)
 
@@ -786,18 +862,44 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             "low":          0,
             "risk":         "LOW",
             "analytics": {
+                "frame_id":         _frame_counters.get(camera_id, 0),   # [Item Q]
                 "total_objects":    0,
                 "processing_ms":    0,
                 "predict_ms":       0,
                 "fps":              0,
-                "tracker_active":   False,
+                # [Item T] Same real-availability check as the happy path —
+                # tracking never ran this frame, but the trackers themselves
+                # may still be alive for the next one.
+                "tracker_active":   (person_tracker is not None) or (equipment_tracker is not None),
                 "class_counts":     {},
                 "ppe_compliance": {
                     "overall":      100.0,
                     "helmet":       100.0,
                     "vest":         100.0,
                     "worker_count": 0,
-                }
+                },
+                # [Item R] Schema-consistent stage timing — nothing ran past
+                # inference failure, so every stage is honestly 0.0.
+                "stage_timing_ms": {
+                    "detection": 0.0,
+                    "tracking":  0.0,
+                    "analytics": 0.0,
+                    "drawing":   0.0,
+                    "total":     0.0,
+                },
+                # [Item N] Same ai_metadata shape as the happy path, with
+                # model_versions reported as "unknown" since no predictor
+                # call completed successfully this frame.
+                "model_metadata": {"infra": {}, "crack": {}},
+                "ai_metadata": {
+                    "engine":         "dual-model-yolo",
+                    "models":         ["infraguard", "crack"],
+                    "model_versions": {"infraguard": "unknown", "crack": "unknown"},
+                    "device":         "cuda" if _CUDA_AVAILABLE else "cpu",
+                    "processing_ms":  0,
+                    "predict_ms":     0,
+                    "fps":            0,
+                },
             },
             "error": str(e)
         }
@@ -836,11 +938,24 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     helmets_raw = [d for d in non_persons if _canonical(d) == "helmet"]
     vests_raw   = [d for d in non_persons if _canonical(d) == "vest"]
 
+    # [Item R] Stage timing checkpoint: tracking starts here (person + equipment).
+    _tracking_start = time.time()
+
     try:
-        persons = person_tracker.update(persons)
+        if person_tracker is None:
+            # Item T: tracker missing — log and degrade gracefully, don't crash.
+            logger.warning(
+                "person_tracker is unavailable for camera %s — skipping person tracking this frame.",
+                camera_id,
+            )
+        else:
+            persons = person_tracker.update(persons)
     except Exception:
         logger.exception("person_tracker.update() failed for camera %s", camera_id)
         persons = []
+    # [Item R] Only the tracker call itself counts toward "tracking" time —
+    # the detection-building loops below are assembly/alerting, not tracking.
+    _person_tracking_ms = round((time.time() - _tracking_start) * 1000, 2)
 
     detections = []
 
@@ -893,6 +1008,9 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
 
             "id":           worker_id,
 
+            # [Item E] Stable audit UUID on every detection, person or not.
+            "detection_uuid": str(uuid.uuid4()),
+
             "class_name":   label,
 
             "label":        f"Worker {worker_id[:4]}",
@@ -913,7 +1031,14 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             "timestamp":    frame_ts,
             "camera_id":    camera_id,              # [R2 #5]
             "type":         "worker",
+            # [Item M] Detection-type taxonomy for dashboard filtering.
+            "detection_type": "PPE",
             "tracking":     True,
+
+            # [Item K] Explicit worker_id field (future-proofing — distinct
+            # from the tracker-assigned positional "id" above).
+            "worker_id":    worker_id,
+            "equipment_id": None,
 
             # [R5 #1] Per-worker PPE association results
             "has_helmet":   has_helmet,
@@ -993,12 +1118,28 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
         if CLASS_MAP.get(d.get("class_name", ""), d.get("class_name", "").lower()) in HEAVY_EQUIPMENT
     ]
     try:
-        tracked_equipment_list = equipment_tracker.update(equipment_raw)
-        # Build a lookup so individual loop iterations can find their tracked entry.
-        _tracked_equip_by_idx = {i: t for i, t in enumerate(tracked_equipment_list)}
+        if equipment_tracker is None:
+            # Item T: tracker missing — log and degrade gracefully, don't crash.
+            logger.warning(
+                "equipment_tracker is unavailable for camera %s — skipping equipment tracking this frame.",
+                camera_id,
+            )
+            _tracked_equip_by_idx = {}
+        else:
+            _equip_tracking_start = time.time()
+            tracked_equipment_list = equipment_tracker.update(equipment_raw)
+            # Build a lookup so individual loop iterations can find their tracked entry.
+            _tracked_equip_by_idx = {i: t for i, t in enumerate(tracked_equipment_list)}
     except Exception:
         logger.exception("equipment_tracker.update() failed for camera %s", camera_id)
         _tracked_equip_by_idx = {}
+    # [Item R] Combined tracking time across both trackers (person + equipment),
+    # excluding the detection-assembly loops that run between/after them.
+    _equipment_tracking_ms = (
+        round((time.time() - _equip_tracking_start) * 1000, 2)
+        if equipment_tracker is not None else 0.0
+    )
+    tracking_ms = round(_person_tracking_ms + _equipment_tracking_ms, 2)
 
     _equip_raw_idx = 0   # running index used to correlate loop iterations below
 
@@ -1052,6 +1193,21 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             "camera_id":    camera_id,              # [R2 #5]
             "type":         "object",
             "tracking":     False,
+
+            # [Item M] Detection-type taxonomy for dashboard filtering.
+            # Crack -> "Crack"; heavy machinery -> "Equipment"; loose
+            # helmet/vest boxes not yet associated to a worker -> "PPE".
+            "detection_type": (
+                "Crack" if label == "crack"
+                else "Equipment" if label in HEAVY_EQUIPMENT
+                else "PPE"
+            ),
+
+            # [Item K/L] Explicit id fields (future-proofing). Equipment gets
+            # its tracked id mirrored here once assigned below; non-equipment
+            # detections leave this None.
+            "worker_id":    None,
+            "equipment_id": stable_id if label in HEAVY_EQUIPMENT else None,
 
             # ── Mod 8: Crack severity with length/width/aspect_ratio ─────────
             "crack_severity": (
@@ -1112,6 +1268,7 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             if tracked_entry:
                 det["id"]       = str(tracked_entry.get("id", det["id"]))
                 det["tracking"] = True
+                det["equipment_id"] = det["id"]   # [Item L] keep in sync with tracked id
             _equip_raw_idx += 1
 
         # [R4 #2] Equipment alerts — medium risk machinery alert channel
@@ -1187,6 +1344,13 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
         if in_zone and det["risk"] == "medium":
             det["risk"]  = "high"
             det["score"] = SEVERITY_SCORE["high"]
+
+        # [Item M] Surface the danger-zone state on the detection itself so
+        # consumers can filter by detection_type == "DangerZone" directly,
+        # without re-deriving it from zone_alerts.
+        det["in_danger_zone"] = in_zone
+        if in_zone:
+            det["detection_type"] = "DangerZone"
 
     # ── Mod 10: Near-Miss Detection ───────────────────────────────────────────
     # Improvement 4: threshold is now relative to the size of the objects being
@@ -1298,6 +1462,25 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     total_processing_ms = round(elapsed * 1000, 2)
     overhead_ms         = round(total_processing_ms - predict_ms, 2)
     inference_time      = total_processing_ms   # kept for backward compat
+
+    # [Item R] Full stage timing breakdown.
+    # detection_ms : YOLO inference only (== predict_ms)
+    # tracking_ms  : person_tracker.update() + equipment_tracker.update() only
+    # analytics_ms : everything else between predict and this point — detection
+    #                assembly, PPE association, alerting, risk scoring
+    # drawing_ms   : this module never renders frames (no cv2 / overlay code) —
+    #                kept as an explicit 0.0 field rather than omitted, so a
+    #                downstream renderer's own timing can be added without a
+    #                schema change.
+    # total_ms     : full wall-clock time for this call, matches processing_ms
+    detection_ms = predict_ms
+    analytics_ms = round(max(0.0, overhead_ms - tracking_ms), 2)
+    drawing_ms   = 0.0   # no drawing/overlay stage in this module
+    total_ms     = total_processing_ms
+
+    # [Item Q] Per-camera frame index, already maintained for frame-skip logic —
+    # reused here as a stable, monotonically increasing frame_id for telemetry.
+    frame_id = _frame_counters.get(camera_id, 0)
 
     # [R5 #1] PPE compliance derived from per-worker association flags
     worker_dets          = [d for d in detections if d.get("type") == "worker"]
@@ -1418,12 +1601,22 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
 
     frame_analytics = {
 
+        "frame_id":         frame_id,            # [Item Q] per-camera monotonic frame index
         "total_objects":    len(detections),
         "processing_ms":    inference_time,
         "predict_ms":       predict_ms,         # [R4 #6] inference-only latency
         "overhead_ms":      overhead_ms,        # Fix 9: tracking+alerts+logging time
+        # [Item R] Explicit per-stage breakdown (sums to ~processing_ms).
+        "stage_timing_ms": {
+            "detection": detection_ms,
+            "tracking":  tracking_ms,
+            "analytics": analytics_ms,
+            "drawing":   drawing_ms,   # always 0.0 — no rendering happens here
+            "total":     total_ms,
+        },
         "fps":              fps,
-        "tracker_active":   True,
+        # [Item T] Reflects real tracker availability instead of a hardcoded True.
+        "tracker_active":   (person_tracker is not None) or (equipment_tracker is not None),
         "camera_health":    (
             "ONLINE"
             if time.time() - last_seen_cameras.get(camera_id, time.time()) <= CAMERA_OFFLINE_THRESHOLD
@@ -1465,6 +1658,30 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
         "ppe_violation_count":  sum(1 for a in ppe_alerts if a.get("risk") in ("high", "critical")),
         "active_alert_count":   len(alerts),
         "critical_alert_count": sum(1 for a in alerts if a.get("risk") == "critical"),
+
+        # ── Compatibility layer: per-model metadata from PredictionResult,
+        # empty dict for old-style predictors or skipped crack frames ────────
+        "model_metadata": {
+            "infra": infra_metadata,
+            "crack": crack_metadata,
+        },
+
+        # [Item N] AI metadata block — engine/device/model versions are
+        # sourced from the GPU check + whatever the predictors themselves
+        # reported via PredictionResult.metadata. Versions fall back to
+        # "unknown" rather than a guess when a predictor doesn't report one.
+        "ai_metadata": {
+            "engine":          "dual-model-yolo",
+            "models":          ["infraguard", "crack"],
+            "model_versions": {
+                "infraguard": infra_metadata.get("model_version", "unknown"),
+                "crack":      crack_metadata.get("model_version", "unknown"),
+            },
+            "device":          "cuda" if _CUDA_AVAILABLE else "cpu",
+            "processing_ms":   inference_time,
+            "predict_ms":      predict_ms,
+            "fps":             fps,
+        },
     }
 
     # [R4 #5] Frame-level counters — useful for history trend charts
@@ -1741,6 +1958,8 @@ def get_processing_breakdown(camera_id=None) -> dict:
 def get_model_health() -> dict:
     """
     Priority 1 #4: Returns current model health status and cumulative failure counts.
+
+    infra_status / crack_status are one of: "ONLINE", "RECOVERING", "FAILED".
 
     Returns:
         {

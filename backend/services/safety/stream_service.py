@@ -3,11 +3,37 @@ import time
 import asyncio
 import logging
 from datetime import datetime, timezone
+from enum import Enum
 
 try:
     import cv2
 except Exception:
     cv2 = None
+
+
+# =========================================================
+# CAMERA STATE
+# =========================================================
+
+class CameraState(str, Enum):
+    """
+    Canonical states for a managed camera.
+
+    Using ``str`` as a mixin means values serialise transparently in
+    JSON (FastAPI / json.dumps) without a custom encoder.
+
+    LiveCamera.jsx can map these to UI indicators, e.g.:
+        Running      → 🟢 Running
+        Initializing → 🟡 Initializing
+        Stopped      → ⚫ Stopped
+        Disconnected → 🟠 Disconnected
+        Error        → 🔴 Error
+    """
+    RUNNING      = "Running"
+    STOPPED      = "Stopped"
+    INITIALIZING = "Initializing"
+    DISCONNECTED = "Disconnected"
+    ERROR        = "Error"
 
 from backend.services.safety.detection_service import process_frame
 from backend.core.websocket_manager import manager
@@ -115,16 +141,46 @@ def open_camera(cam_id=0):
 
 
 # =========================================================
+# MODEL STATUS
+# =========================================================
+# Static for now — flip an entry to "OFFLINE" / "DEGRADED" if a model
+# fails to load or is hot-swapped out. Centralised here so build_telemetry
+# and any future health-check endpoint share one source of truth.
+
+MODEL_STATUS = {
+    "InfraGuard": "ONLINE",
+    "Crack":      "ONLINE",
+}
+
+
+# =========================================================
 # TELEMETRY BUILDER
 # =========================================================
 
-def build_telemetry(cam_id, fps, risk):
+def build_telemetry(cam_id, fps, risk, frame_id=None, pipeline_timing=None):
+    """
+    pipeline_timing: optional dict with any of
+        capture_time_ms, inference_time_ms, tracking_time_ms,
+        risk_time_ms, total_pipeline_time_ms
+    Missing keys default to 0.0 so the shape is always stable for
+    downstream consumers (UI, analytics).
+    """
+    timing = pipeline_timing or {}
+
     return {
         "camera_id": cam_id,
+        "frame_id":  frame_id,
         "fps":       fps,
         "risk":      risk,
         "status":    "ACTIVE",
-        "engine":    "InfraGuard Enterprise AI",
+        "models":    dict(MODEL_STATUS),
+        "timing": {
+            "capture_time_ms":       timing.get("capture_time_ms", 0.0),
+            "inference_time_ms":     timing.get("inference_time_ms", 0.0),
+            "tracking_time_ms":      timing.get("tracking_time_ms", 0.0),
+            "risk_time_ms":          timing.get("risk_time_ms", 0.0),
+            "total_pipeline_time_ms": timing.get("total_pipeline_time_ms", 0.0),
+        },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -143,7 +199,7 @@ class CameraManager:
     def __init__(self):
         self._caps:    dict = {}
         self._threads: dict = {}
-        self._running: dict = {}
+        self._states:  dict = {}   # cam_id → CameraState
         self._frames:  dict = {}
         self._results: dict = {}
 
@@ -169,31 +225,38 @@ class CameraManager:
     # ------------------------------------------------------------------
 
     def _worker(self, cam_id):
+        self._states[cam_id] = CameraState.INITIALIZING
         cap = open_camera(cam_id)
 
         if cap is None:
-            self._running[cam_id] = False
+            self._states[cam_id] = CameraState.ERROR
             logger.warning("[CAM %s] UNAVAILABLE — thread exiting", cam_id)
             return
 
-        self._caps[cam_id]    = cap
-        self._running[cam_id] = True
+        self._caps[cam_id]   = cap
+        self._states[cam_id] = CameraState.RUNNING
         logger.info("[CAM %s] STREAM STARTED", cam_id)
 
         frame_counter = 0
+        frame_id      = 0
         start_time    = time.time()
         interval      = 1.0 / TARGET_FPS
 
-        while self._running.get(cam_id, False):
+        while self._states.get(cam_id) == CameraState.RUNNING:
 
             tick = time.time()
 
-            ok, frame = cap.read()
+            capture_start   = time.time()
+            ok, frame       = cap.read()
+            capture_time_ms = (time.time() - capture_start) * 1000.0
 
             if not ok:
                 logger.warning("[CAM %s] FRAME READ FAILED", cam_id)
+                self._states[cam_id] = CameraState.DISCONNECTED
                 time.sleep(0.05)
-                continue
+                # Attempt to recover — re-open will be handled by next
+                # loop iteration check; break out so _worker exits cleanly.
+                break
 
             if frame is None:
                 logger.warning("[CAM %s] FRAME IS NONE", cam_id)
@@ -202,6 +265,7 @@ class CameraManager:
             try:
                 frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
 
+                pipeline_start = time.time()
                 try:
                     result = process_frame(frame)
                 except Exception:
@@ -211,22 +275,40 @@ class CameraManager:
                         "detections": [],
                         "analytics":  {},
                     }
+                total_pipeline_time_ms = (time.time() - pipeline_start) * 1000.0
+
+                # process_frame() may optionally return its own stage
+                # breakdown under "timing" (e.g. {"inference_time_ms": ...,
+                # "tracking_time_ms": ..., "risk_time_ms": ...}). If it
+                # doesn't, those default to 0.0 in build_telemetry and we
+                # still report capture_time_ms + total_pipeline_time_ms,
+                # which are always measurable here regardless of what the
+                # downstream detector exposes.
+                stage_timing = dict(result.get("timing", {}))
+                stage_timing["capture_time_ms"] = round(capture_time_ms, 2)
+                stage_timing["total_pipeline_time_ms"] = round(
+                    capture_time_ms + total_pipeline_time_ms, 2
+                )
 
                 frame_counter += 1
+                frame_id      += 1
                 elapsed = time.time() - start_time
                 fps     = round(frame_counter / elapsed, 1)
 
                 telemetry = build_telemetry(
                     cam_id, fps,
-                    result.get("risk", "LOW")
+                    result.get("risk", "LOW"),
+                    frame_id=frame_id,
+                    pipeline_timing=stage_timing,
                 )
 
                 self._frames[cam_id]  = frame
-                self._results[cam_id] = {**result, "telemetry": telemetry}
+                self._results[cam_id] = {**result, "frame_id": frame_id, "telemetry": telemetry}
 
                 _broadcast(cam_id, {
                     "type":       "frame_result",
                     "camera_id":  cam_id,
+                    "frame_id":   frame_id,
                     "risk":       result.get("risk", "LOW"),
                     "detections": result.get("detections", []),
                     "analytics":  result.get("analytics", {}),
@@ -247,14 +329,16 @@ class CameraManager:
             pass
 
         self._caps.pop(cam_id, None)
-        self._running[cam_id] = False
+        # Preserve ERROR / DISCONNECTED if set; otherwise mark Stopped.
+        if self._states.get(cam_id) == CameraState.RUNNING:
+            self._states[cam_id] = CameraState.STOPPED
 
         # FIX (#7, #8): drop cached frame/result so a stopped camera doesn't
         # keep serving stale data or holding memory indefinitely.
         self._frames.pop(cam_id, None)
         self._results.pop(cam_id, None)
 
-        logger.info("[CAM %s] STOPPED", cam_id)
+        logger.info("[CAM %s] STOPPED (state=%s)", cam_id, self._states.get(cam_id))
 
     # ------------------------------------------------------------------
     # Public API
@@ -284,6 +368,8 @@ class CameraManager:
             if old_thread and old_thread.is_alive():
                 old_thread.join(timeout=STOP_JOIN_TIMEOUT)
 
+            self._states[cam_id] = CameraState.INITIALIZING
+
             thread = threading.Thread(
                 target=self._worker,
                 args=(cam_id,),
@@ -295,14 +381,17 @@ class CameraManager:
 
         deadline = time.time() + START_POLL_TIMEOUT
         while time.time() < deadline:
-            if self._running.get(cam_id, False):
+            state = self._states.get(cam_id)
+            if state == CameraState.RUNNING:
                 return True
+            if state in (CameraState.ERROR, CameraState.DISCONNECTED):
+                return False
             if not thread.is_alive():
                 # Worker exited early (e.g. camera failed to open).
                 return False
             time.sleep(START_POLL_INTERVAL)
 
-        return self._running.get(cam_id, False)
+        return self._states.get(cam_id) == CameraState.RUNNING
 
     def stop_camera(self, cam_id=0) -> None:
         """
@@ -317,7 +406,7 @@ class CameraManager:
         lock = self._get_lock(cam_id)
 
         with lock:
-            self._running[cam_id] = False
+            self._states[cam_id] = CameraState.STOPPED
 
             cap = self._caps.get(cam_id)
             if cap:
@@ -348,28 +437,40 @@ class CameraManager:
 
     def stop_all_cameras(self) -> None:
         """Called by main.py lifespan on shutdown."""
-        for cam_id in list(self._running.keys()):
+        all_ids = set(self._states.keys()) | set(self._threads.keys())
+        for cam_id in list(all_ids):
             self.stop_camera(cam_id)
         logger.info("[STREAM ENGINE] ALL CAMERAS STOPPED")
 
     def is_camera_running(self, cam_id=0) -> bool:
         """
-        FIX (#9): a stale _running[cam_id] = True flag isn't enough —
+        FIX (#9): a stale state flag isn't enough —
         if the worker thread died unexpectedly (uncaught exception, camera
         yanked, etc.) without going through stop_camera(), the flag could
-        still say True. Cross-check against actual thread liveness.
+        still say Running. Cross-check against actual thread liveness.
         """
-        running_flag = self._running.get(cam_id, False)
-        if not running_flag:
+        state = self._states.get(cam_id)
+        if state != CameraState.RUNNING:
             return False
 
         thread = self._threads.get(cam_id)
         if thread is None or not thread.is_alive():
-            # Thread died without cleaning up — reflect that immediately.
-            self._running[cam_id] = False
+            # Thread died without cleaning up — mark Disconnected.
+            self._states[cam_id] = CameraState.DISCONNECTED
             return False
 
         return True
+
+    def get_camera_state(self, cam_id=0) -> CameraState:
+        """
+        Return the rich CameraState for ``cam_id``.
+
+        Also reconciles a stale RUNNING flag (same liveness check as
+        ``is_camera_running``) so the returned value is always accurate.
+        """
+        # Trigger the liveness reconciliation side-effect.
+        self.is_camera_running(cam_id)
+        return self._states.get(cam_id, CameraState.STOPPED)
 
     def get_latest_frame(self, cam_id=0):
         return self._frames.get(cam_id)
@@ -379,15 +480,17 @@ class CameraManager:
             "risk":       "LOW",
             "detections": [],
             "analytics":  {},
+            "frame_id":   None,
             "telemetry":  {},
         })
 
     def get_all_camera_status(self) -> dict:
         """Used by /camera/list endpoint."""
-        all_ids = set(self._running.keys()) | set(self._threads.keys())
+        all_ids = set(self._states.keys()) | set(self._threads.keys())
         return {
             str(cam_id): {
                 "running":   self.is_camera_running(cam_id),
+                "state":     self.get_camera_state(cam_id),   # rich state for UI
                 "has_frame": cam_id in self._frames,
                 "risk":      self._results.get(cam_id, {}).get("risk", "LOW"),
             }
@@ -402,10 +505,11 @@ class CameraManager:
 
 camera_manager = CameraManager()
 
-def start_camera(cam_id=0)        -> bool:  return camera_manager.start_camera(cam_id)
-def stop_camera(cam_id=0)         -> None:  return camera_manager.stop_camera(cam_id)
-def stop_all_cameras()            -> None:  return camera_manager.stop_all_cameras()
-def is_camera_running(cam_id=0)   -> bool:  return camera_manager.is_camera_running(cam_id)
-def get_latest_frame(cam_id=0):             return camera_manager.get_latest_frame(cam_id)
-def get_latest_result(cam_id=0)   -> dict:  return camera_manager.get_latest_result(cam_id)
-def get_all_camera_status()       -> dict:  return camera_manager.get_all_camera_status()
+def start_camera(cam_id=0)        -> bool:         return camera_manager.start_camera(cam_id)
+def stop_camera(cam_id=0)         -> None:         return camera_manager.stop_camera(cam_id)
+def stop_all_cameras()            -> None:         return camera_manager.stop_all_cameras()
+def is_camera_running(cam_id=0)   -> bool:         return camera_manager.is_camera_running(cam_id)
+def get_camera_state(cam_id=0)    -> CameraState:  return camera_manager.get_camera_state(cam_id)
+def get_latest_frame(cam_id=0):                    return camera_manager.get_latest_frame(cam_id)
+def get_latest_result(cam_id=0)   -> dict:         return camera_manager.get_latest_result(cam_id)
+def get_all_camera_status()       -> dict:         return camera_manager.get_all_camera_status()

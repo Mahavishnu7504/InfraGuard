@@ -1,123 +1,357 @@
+
+
 from ultralytics import YOLO
 from pathlib import Path
+from dataclasses import dataclass
+from typing import List, Dict, Any
+from datetime import datetime, timezone
+import logging
+import time
+import cv2
 import torch
 
 
-class InfraGuardPredictor:
-    def __init__(self, model_name="infraguard.pt"):
-        # ==============================
-        # PATH SETUP
-        # ==============================
-        project_root = Path(__file__).resolve().parents[2]
-        model_path = project_root / "models" / model_name
+logger = logging.getLogger(__name__)
 
-        if not model_path.exists():
-            raise FileNotFoundError(f"Model not found: {model_path}")
 
-        # ==============================
-        # DEVICE SELECTION
-        # ==============================
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+# =====================================================
+# LABEL NORMALIZATION
+# =====================================================
 
-        print(f"[YOLO] Loading model on: {self.device}")
+LABEL_MAP = {
+    "Helmet": "helmet",
+    "helmet": "helmet",
 
-        self.model = YOLO(str(model_path))
+    "Vest": "vest",
+    "vest": "vest",
+    "vests": "vest",
 
-        # ==============================
-        # GPU OPTIMIZATION
-        # ==============================
+    "Glove": "gloves",
+    "glove": "gloves",
+    "gloves": "gloves",
+
+    "Boot": "boots",
+    "boots": "boots",
+
+    "crack": "crack",
+    "crack_detection": "crack",
+    "crack detection": "crack",
+
+    "Dump Truck": "dump_truck",
+    "dump truck": "dump_truck",
+
+    "Mobile Crane": "mobile_crane",
+    "mobile crane": "mobile_crane",
+}
+
+
+# =====================================================
+# CONFIG / RESULT
+# =====================================================
+
+@dataclass
+class InferenceConfig:
+    confidence: float = 0.4
+    iou: float = 0.5
+    imgsz: int = 640
+    device: str = ""
+
+
+@dataclass
+class PredictionResult:
+    detections: List[Dict[str, Any]]
+    metadata: Dict[str, Any]
+
+
+# =====================================================
+# BASE PREDICTOR
+# =====================================================
+
+class BasePredictor:
+
+    MODEL_SOURCE = "unknown"
+
+    def __init__(
+        self,
+        model_name: str,
+        config: InferenceConfig | None = None
+    ):
+
+        self.config = (
+            config
+            or InferenceConfig()
+        )
+
+        root = Path(__file__).resolve().parents[2]
+
+        self.model_path = (
+            root /
+            "models" /
+            model_name
+        )
+
+        if not self.model_path.exists():
+            raise FileNotFoundError(
+                f"Model not found: {self.model_path}"
+            )
+
+
+        self.device = (
+            self.config.device
+            if self.config.device
+            else (
+                "cuda"
+                if torch.cuda.is_available()
+                else "cpu"
+            )
+        )
+
+
+        logger.info(
+            f"Loading {self.MODEL_SOURCE} model on {self.device}"
+        )
+
+
+        self.model = YOLO(
+            str(self.model_path)
+        )
+
+
         if self.device == "cuda":
             self.model.to("cuda")
-            self.model.fuse()  # speed boost
+            self.model.fuse()
 
-        print(f"[YOLO] Loaded model from: {model_path}")
 
-    # ==============================
-    # SINGLE FRAME PREDICTION
-    # ==============================
-    def predict_frame(self, frame):
-        """
-        Returns standardized detections
-        """
+        self.model_name = model_name
 
-        # 🔥 Resize for speed (balanced)
-        frame = self._preprocess(frame)
+
+        logger.info(
+            f"{self.MODEL_SOURCE} model loaded successfully"
+        )
+
+
+    # -------------------------------------------------
+
+    def predict_frame(
+        self,
+        frame
+    ) -> PredictionResult:
+
+        start = time.time()
+
+        frame = self.preprocess(
+            frame
+        )
+
 
         results = self.model(
             frame,
             device=self.device,
-            conf=0.4,
-            iou=0.5,
+            conf=self.config.confidence,
+            iou=self.config.iou,
+            imgsz=self.config.imgsz,
             verbose=False
         )
 
-        return self._parse_results(results)
 
-    # ==============================
-    # BATCH PREDICTION (ADVANCED)
-    # ==============================
-    def predict_batch(self, frames):
-        """
-        Batch inference for performance boost
-        """
-        frames = [self._preprocess(f) for f in frames]
+        return PredictionResult(
+
+            detections=
+                self.parse_results(results),
+
+            metadata={
+                "model_name": self.model_name,
+                "model_source": self.MODEL_SOURCE,
+                "device": self.device,
+                "inference_time":
+                    round(
+                        time.time()-start,
+                        4
+                    ),
+                "timestamp":
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat()
+            }
+        )
+
+
+    # -------------------------------------------------
+
+    def predict_batch(
+        self,
+        frames
+    ):
+
+        frames = [
+            self.preprocess(f)
+            for f in frames
+        ]
 
         results = self.model(
             frames,
             device=self.device,
-            conf=0.4,
-            iou=0.5,
+            conf=self.config.confidence,
+            iou=self.config.iou,
+            imgsz=self.config.imgsz,
             verbose=False
         )
 
-        batch_outputs = []
-        for res in results:
-            batch_outputs.append(self._parse_single(res))
+        return [
+            self.parse_single(r)
+            for r in results
+        ]
 
-        return batch_outputs
 
-    # ==============================
-    # PREPROCESS
-    # ==============================
-    def _preprocess(self, frame):
-        """
-        Resize frame for faster inference
-        """
-        import cv2
-        return cv2.resize(frame, (640, 480))
+    # -------------------------------------------------
 
-    # ==============================
-    # PARSE MULTI RESULTS
-    # ==============================
-    def _parse_results(self, results):
-        detections = []
+    def preprocess(
+        self,
+        frame
+    ):
+
+        return cv2.resize(
+            frame,
+            (self.config.imgsz,
+             self.config.imgsz)
+        )
+
+
+    # -------------------------------------------------
+
+    def parse_results(
+        self,
+        results
+    ):
+
+        output = []
 
         for result in results:
-            detections.extend(self._parse_single(result))
+            output.extend(
+                self.parse_single(result)
+            )
 
-        return detections
+        return output
 
-    # ==============================
-    # PARSE SINGLE RESULT
-    # ==============================
-    def _parse_single(self, result):
+
+    # -------------------------------------------------
+
+    def parse_single(
+        self,
+        result
+    ):
+
         detections = []
 
         if result.boxes is None:
             return detections
 
-        names = result.names
 
         for box in result.boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            cls = int(box.cls[0])
-            conf = float(box.conf[0])
+
+            x1,y1,x2,y2 = (
+                box.xyxy[0]
+                .tolist()
+            )
+
+            cls = int(
+                box.cls[0]
+            )
+
+            conf = float(
+                box.conf[0]
+            )
+
+            label = self.normalize_label(
+                result.names[cls]
+            )
+
 
             detections.append({
-                "bbox": [float(x1), float(y1), float(x2), float(y2)],
+
+                "bbox": [
+                    float(x1),
+                    float(y1),
+                    float(x2),
+                    float(y2)
+                ],
+
                 "class_id": cls,
-                "class_name": str(names[cls]).lower().strip(),
-                "confidence": round(conf, 2)
+
+                "class_name": label,
+
+                "confidence":
+                    round(conf, 3),
+
+                "model_source":
+                    self.MODEL_SOURCE,
+
+                "timestamp":
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat()
+
             })
 
+
         return detections
+
+
+    # -------------------------------------------------
+
+    def normalize_label(
+        self,
+        label
+    ):
+
+        normalized = (
+            str(label)
+            .lower()
+            .replace(" ", "_")
+            .strip()
+        )
+
+        return LABEL_MAP.get(
+            label,
+            LABEL_MAP.get(
+                normalized,
+                normalized
+            )
+        )
+
+
+# =====================================================
+# INFRAGUARD
+# =====================================================
+
+class InfraGuardPredictor(BasePredictor):
+
+    MODEL_SOURCE = "infraguard"
+
+
+    def __init__(self, config=None):
+
+        super().__init__(
+            "infraguard.pt",
+            config
+        )
+
+
+# =====================================================
+# CRACK
+# =====================================================
+
+class CrackPredictor(BasePredictor):
+
+    MODEL_SOURCE = "crack"
+
+
+    def __init__(self, config=None):
+
+        super().__init__(
+            "crack.pt",
+            config
+            or InferenceConfig(
+                confidence=0.30
+            )
+        )

@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 import time
 import asyncio
+import base64
 
 from backend.services.safety.detection_service import (
     process_frame
@@ -62,6 +63,28 @@ def decode_image(
         )
 
     return frame
+
+
+# =========================================
+# IMAGE ENCODER
+# =========================================
+
+def encode_image(frame):
+    ret, buffer = cv2.imencode(
+        ".jpg",
+        frame,
+        [
+            cv2.IMWRITE_JPEG_QUALITY,
+            85
+        ]
+    )
+
+    if not ret:
+        raise ValueError("Image encoding failed")
+
+    return base64.b64encode(
+        buffer.tobytes()
+    ).decode("utf-8")
 
 
 # =========================================
@@ -268,6 +291,20 @@ async def detect(
                 0
             )
 
+        # NOTE: analytics/annotated_image are intentionally NOT computed
+        # here. /detect is the lightweight endpoint (used by polling /
+        # streaming callers); encoding a frame or building full analytics
+        # on every call adds real per-request cost. We just surface
+        # whatever process_frame already returned, defaulting missing
+        # keys to empty values so the response shape is always stable.
+        # If you need the heavier payload populated for real, call
+        # /detect-full instead, or let me know and I'll wire frame
+        # encoding into this path too.
+        analytics = result.get(
+            "analytics",
+            {}
+        )
+
         return {
 
             "success": True,
@@ -278,7 +315,42 @@ async def detect(
                 result.get(
                     "detections",
                     []
-                )
+                ),
+
+            "summary":
+                analytics.get(
+                    "ppe_summary",
+                    {}
+                ),
+
+            "findings":
+                result.get(
+                    "findings",
+                    []
+                ),
+
+            "recommendations":
+                analytics.get(
+                    "recommendations",
+                    []
+                ),
+
+            "analytics":
+                analytics,
+
+            "telemetry":
+                result.get(
+                    "telemetry",
+                    {}
+                ),
+
+            "ai_metadata":
+                result.get(
+                    "ai_metadata",
+                    {}
+                ),
+
+            "annotated_image": ""
         }
 
     except Exception as e:
@@ -287,6 +359,95 @@ async def detect(
             status_code=500,
             detail=str(e)
         )
+
+
+# =========================================
+# FULL DETECTION API
+# =========================================
+
+@router.post("/detect-full")
+async def detect_full(
+    file: UploadFile = File(...)
+):
+
+    try:
+
+        contents = await file.read()
+
+        frame = decode_image(
+            contents
+        )
+
+        result = process_frame(
+            frame
+        )
+
+        annotated_image = encode_image(
+            frame
+        )
+
+        analytics = result.get(
+            "analytics",
+            {}
+        )
+
+        add_alert(
+            "Safety Analysis Complete",
+            result.get("risk", "LOW"),
+            0
+        )
+
+        return {
+
+            "success": True,
+
+            "image": annotated_image,
+
+            "detections":
+                result.get(
+                    "detections",
+                    []
+                ),
+
+            "analytics":
+                analytics,
+
+            "ppe_summary":
+                analytics.get(
+                    "ppe_summary",
+                    {}
+                ),
+
+            "equipment":
+                analytics.get(
+                    "equipment",
+                    []
+                ),
+
+            "recommendations":
+                analytics.get(
+                    "recommendations",
+                    []
+                ),
+
+            "risk":
+                result.get(
+                    "risk",
+                    analytics.get(
+                        "overall_risk",
+                        "LOW"
+                    )
+                )
+        }
+
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
 
 
 # =========================================

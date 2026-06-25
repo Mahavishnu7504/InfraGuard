@@ -1,12 +1,17 @@
 from typing import List, Dict
-from rules import (
+from datetime import datetime
+
+from backend.services.safety.risk_engine.rules import (
     evaluate_risk,
     detect_ppe_violations,
     detect_vehicle_proximity,
     detect_danger_zones,
     compute_severity,
-    CLASS_ID_MAP,
 )
+
+
+def _timestamp():
+    return datetime.utcnow().isoformat()
 
 
 # -----------------------------------------------------
@@ -15,10 +20,8 @@ from rules import (
 
 def analyze_ppe(detections: List[Dict]) -> List[Dict]:
     """
-    Analyze PPE compliance for all detected persons.
-
-    Returns a list of violation records, one per person,
-    including assigned PPE, missing items, risk level, and severity score.
+    Analyze PPE compliance while preserving existing behavior.
+    Adds tracking, event metadata and compliance-ready fields.
     """
 
     if not detections:
@@ -27,17 +30,27 @@ def analyze_ppe(detections: List[Dict]) -> List[Dict]:
     ppe_result = detect_ppe_violations(detections)
     violations = []
 
-    for person in ppe_result["persons"]:
+    for person in ppe_result.get("persons", []):
 
-        severity = compute_severity(person["risk"])
+        severity_result = compute_severity(person.get("risk", "LOW"))
+
+        if isinstance(severity_result, tuple):
+            risk_score, severity = severity_result
+        else:
+            risk_score, severity = None, severity_result
 
         violations.append({
-            "person_id": person["person_id"],
-            "risk": person["risk"],
+            "event_type": "PPE",
+            "timestamp": _timestamp(),
+            "track_id": person.get("track_id"),
+            "person_id": person.get("person_id"),
+            "risk": person.get("risk"),
+            "risk_score": risk_score,
             "severity_score": severity,
-            "assigned_ppe": person["assigned_ppe"],
-            "missing_ppe": person["missing"],
-            "reason": person["reason"],
+            "assigned_ppe": person.get("assigned_ppe", []),
+            "missing_ppe": person.get("missing", []),
+            "reason": person.get("reason"),
+            "model_source": "infraguard",
         })
 
     return violations
@@ -48,11 +61,6 @@ def analyze_ppe(detections: List[Dict]) -> List[Dict]:
 # -----------------------------------------------------
 
 def analyze_proximity(detections: List[Dict], threshold: int = 300) -> List[Dict]:
-    """
-    Analyze worker-machine proximity violations.
-
-    Returns a list of proximity alerts with machine type and pixel distance.
-    """
 
     if not detections:
         return []
@@ -61,15 +69,23 @@ def analyze_proximity(detections: List[Dict], threshold: int = 300) -> List[Dict
     violations = []
 
     for alert in raw:
+        distance = alert.get("distance", 0)
+
         violations.append({
-            "type": alert["type"],
-            "machine": alert["machine"],
-            "distance_px": alert["distance"],
-            "risk": "HIGH" if alert["distance"] < threshold // 2 else "MEDIUM",
+            "event_type": "Equipment",
+            "timestamp": _timestamp(),
+            "type": alert.get("type"),
+            "machine": alert.get("machine"),
+            "machine_count": 1,
+            "distance_px": distance,
+            "worker_distance": distance,
+            "risk": "HIGH" if distance < threshold // 2 else "MEDIUM",
             "reason": (
-                f"Worker within {alert['distance']}px of {alert['machine']} "
+                f"Worker within {distance}px of "
+                f"{alert.get('machine')} "
                 f"(threshold: {threshold}px)"
             ),
+            "model_source": "infraguard",
         })
 
     return violations
@@ -80,11 +96,6 @@ def analyze_proximity(detections: List[Dict], threshold: int = 300) -> List[Dict
 # -----------------------------------------------------
 
 def analyze_danger_zones(detections: List[Dict], radius: int = 350) -> List[Dict]:
-    """
-    Analyze danger zone breaches around heavy machinery.
-
-    Returns a list of danger zone alerts with machine type and breach distance.
-    """
 
     if not detections:
         return []
@@ -94,14 +105,18 @@ def analyze_danger_zones(detections: List[Dict], radius: int = 350) -> List[Dict
 
     for entry in raw:
         alerts.append({
-            "type": entry["type"],
-            "machine": entry["machine"],
-            "distance_px": entry["distance"],
+            "event_type": "Danger Zone",
+            "timestamp": _timestamp(),
+            "type": entry.get("type"),
+            "machine": entry.get("machine"),
+            "distance_px": entry.get("distance"),
             "risk": "HIGH",
             "reason": (
-                f"Worker entered danger zone of {entry['machine']} "
-                f"at {entry['distance']}px (radius: {radius}px)"
+                f"Worker entered danger zone of "
+                f"{entry.get('machine')} "
+                f"at {entry.get('distance')}px"
             ),
+            "model_source": "infraguard",
         })
 
     return alerts
@@ -116,45 +131,82 @@ def generate_violation_report(
     image_id: str = "unknown",
     proximity_threshold: int = 300,
     danger_radius: int = 350,
+    camera_id: str = "unknown",
 ) -> Dict:
-    """
-    Run all violation checks and return a unified report dict.
 
-    Args:
-        detections:           List of detection dicts with 'class_id', 'class_name', 'bbox', 'confidence'.
-        image_id:             Identifier for the source image (filename or UUID).
-        proximity_threshold:  Pixel distance threshold for worker-machine proximity.
-        danger_radius:        Pixel radius for danger zone breach detection.
+    ppe_violations = analyze_ppe(detections)
+    proximity_alerts = analyze_proximity(
+        detections,
+        threshold=proximity_threshold
+    )
+    danger_alerts = analyze_danger_zones(
+        detections,
+        radius=danger_radius
+    )
 
-    Returns:
-        A structured violation report with summary, per-category findings,
-        overall risk level, and aggregate severity score.
-    """
+    risk_result = evaluate_risk(detections)
 
-    ppe_violations      = analyze_ppe(detections)
-    proximity_alerts    = analyze_proximity(detections, threshold=proximity_threshold)
-    danger_alerts       = analyze_danger_zones(detections, radius=danger_radius)
+    overall_risk = risk_result.get("risk_level", "LOW")
+    severity_result = compute_severity(overall_risk)
 
-    # Derive overall risk from evaluate_risk (single source of truth)
-    risk_result         = evaluate_risk(detections)
-    overall_risk        = risk_result["risk_level"]
-    overall_severity    = compute_severity(overall_risk)
+    if isinstance(severity_result, tuple):
+        risk_score, overall_severity = severity_result
+    else:
+        risk_score, overall_severity = None, severity_result
 
-    total_persons       = len([d for d in detections if d["class_name"] == "person"])
-    persons_at_risk     = len([v for v in ppe_violations if v["risk"] != "LOW"])
+    total_persons = len([
+        d for d in detections
+        if d.get("class_name") == "person"
+    ])
+
+    compliant_workers = len([
+        v for v in ppe_violations
+        if v.get("risk") == "LOW"
+    ])
+
+    ppe_compliance = (
+        round((compliant_workers / total_persons) * 100, 2)
+        if total_persons else 100
+    )
+
+    cracks = [
+        d for d in detections
+        if "crack" in d.get("class_name", "").lower()
+    ]
 
     return {
         "image_id": image_id,
+        "camera_id": camera_id,
+
         "overall_risk": overall_risk,
         "overall_severity": overall_severity,
+
         "summary": {
-            "total_persons": total_persons,
-            "persons_at_risk": persons_at_risk,
-            "ppe_violations": len([v for v in ppe_violations if v["risk"] != "LOW"]),
-            "proximity_alerts": len(proximity_alerts),
-            "danger_zone_breaches": len(danger_alerts),
+            "workers": total_persons,
+            "equipment": len(proximity_alerts),
+            "cracks": len(cracks),
+            "danger_zones": len(danger_alerts),
+            "ppe_compliance_percentage": ppe_compliance,
+            "overall_safety_score": risk_score,
+            "persons_at_risk": len([
+                v for v in ppe_violations
+                if v.get("risk") != "LOW"
+            ]),
         },
+
         "ppe_analysis": ppe_violations,
+        "equipment_analysis": proximity_alerts,
         "proximity_analysis": proximity_alerts,
         "danger_zone_analysis": danger_alerts,
+
+        "crack_analysis": [
+            {
+                "event_type": "Crack",
+                "timestamp": _timestamp(),
+                "class_name": d.get("class_name"),
+                "confidence": d.get("confidence"),
+                "model_source": "crack",
+            }
+            for d in cracks
+        ],
     }
