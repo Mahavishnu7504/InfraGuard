@@ -1,11 +1,12 @@
+import { memo } from "react";
 import Sidebar from "./Sidebar";
 import "./PageLayout.css";
 
-export default function PageLayout({
-    badge,
-    title,
-    subtitle,
-    rightContent,
+function PageLayout({
+    badge = "",
+    title = "",
+    subtitle = "",
+    rightContent = null,
     children,
 }) {
     return (
@@ -13,7 +14,7 @@ export default function PageLayout({
             <Sidebar />
 
             <div className="main-layout">
-                <main className="page-wrapper">
+                <main className="page-wrapper" role="main">
                     <div className="page-container">
 
                         {(badge || title || subtitle || rightContent) && (
@@ -40,3 +41,5 @@ export default function PageLayout({
         </div>
     );
 }
+
+export default memo(PageLayout);

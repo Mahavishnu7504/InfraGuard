@@ -122,6 +122,27 @@ function getRiskImpact(category = "") {
   return "Operational and compliance risk if unaddressed.";
 }
 
+/* ── PRIORITY BADGE COLORS ──
+   Static lookup — defined once at module scope so it isn't
+   recreated on every render of the AI practices grid.
+─────────────────────────────────────────────────────────────────── */
+const PRIORITY_COLORS = {
+  Critical: "#e5484d",
+  High: "#f59e0b",
+  Medium: "#3b82f6",
+  Low: "#6b7280",
+};
+
+/* ── REPORT READINESS CHECKLIST ──
+   Static labels for the Report Readiness panel.
+─────────────────────────────────────────────────────────────────── */
+const REPORT_CHECKLIST = [
+  "Findings Reviewed",
+  "Recommendations Generated",
+  "Corrective Actions Identified",
+  "Ready For Report Generation",
+];
+
 /* ── Derive AI-contextual practices from analysis results ─────── */
 function buildAIPractices(findings = []) {
   if (!findings.length) return [];
@@ -146,7 +167,9 @@ export default function BestPractices() {
 
   /* Read persisted analysis if available */
   const qualityData = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem("qualityData") || "{}"); } catch { return {}; }
+    const stored = localStorage.getItem("qualityData");
+    if (!stored) return {};
+    try { return JSON.parse(stored); } catch { return {}; }
   }, []);
 
   // FIX: flatten findings from data.images[].report[] (new shape)
@@ -340,9 +363,9 @@ export default function BestPractices() {
               <FaBullseye /> Highest Risk Areas
             </div>
             <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-              {topRiskAreas.map((area, i) => (
+              {topRiskAreas.map((area) => (
                 <div
-                  key={i}
+                  key={area.label}
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
@@ -372,6 +395,13 @@ export default function BestPractices() {
                   <p>Run an inspection to generate AI-derived best practices here.</p>
                 </div>
               </div>
+              <button
+                className="primary-btn"
+                style={{ marginTop: 16 }}
+                onClick={() => navigate("/quality/upload")}
+              >
+                Go to Upload
+              </button>
             </PageCard>
           )}
           {aiPractices.map((item, index) => {
@@ -380,16 +410,10 @@ export default function BestPractices() {
             const team = getResponsibleTeam(category);
             const compliance = getComplianceMapping(category);
             const riskImpact = getRiskImpact(category);
-            const priorityColors = {
-              Critical: "#e5484d",
-              High: "#f59e0b",
-              Medium: "#3b82f6",
-              Low: "#6b7280",
-            };
 
             return (
               <motion.div
-                key={index}
+                key={item.title}
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: index * 0.055 }}
@@ -408,7 +432,7 @@ export default function BestPractices() {
                       padding: "3px 10px",
                       borderRadius: 999,
                       color: "#fff",
-                      background: priorityColors[priority] || "#6b7280",
+                      background: PRIORITY_COLORS[priority] || "#6b7280",
                     }}
                   >
                     {priority.toUpperCase()}
@@ -460,8 +484,8 @@ export default function BestPractices() {
 
                   {/* Points */}
                   <div className="practice-points">
-                    {item.points.map((point, i) => (
-                      <div key={i} className="practice-point">
+                    {item.points.map((point) => (
+                      <div key={`${item.title}-${point}`} className="practice-point">
                         <FaCheckCircle />
                         <span>{point}</span>
                       </div>
@@ -514,8 +538,8 @@ export default function BestPractices() {
                 </tr>
               </thead>
               <tbody>
-                {matrixRows.map((row, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                {matrixRows.map((row) => (
+                  <tr key={`${row.issue}-${row.owner}`} style={{ borderBottom: "1px solid var(--border)" }}>
                     <td style={{ padding: "8px 6px", textTransform: "capitalize" }}>{row.issue}</td>
                     <td style={{ padding: "8px 6px" }}>{row.priority}</td>
                     <td style={{ padding: "8px 6px" }}>{row.owner}</td>
@@ -546,14 +570,9 @@ export default function BestPractices() {
               <FaClipboardCheck /> Report Readiness
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 10 }}>
-              {[
-                "Findings Reviewed",
-                "Recommendations Generated",
-                "Corrective Actions Identified",
-                "Ready For Report Generation",
-              ].map((label, i) => (
+              {REPORT_CHECKLIST.map((label) => (
                 <div
-                  key={i}
+                  key={label}
                   style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.85rem", color: "var(--b)" }}
                 >
                   <FaCheckCircle /> {label}

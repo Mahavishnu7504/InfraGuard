@@ -71,6 +71,16 @@ const STAGES = [
   "Finalizing Inspection Analytics",
 ];
 
+/* ── Tunable constants ────────────────────────────────────────────
+   Centralized here so behavior (timing, limits, truncation) can be
+   adjusted without hunting through JSX/logic for inline literals.
+── */
+const STAGE_INTERVAL_MS = 1100;
+const MAX_FILENAME_LENGTH = 22;
+const TRUNCATED_FILENAME_LENGTH = 19;
+const MAX_IMAGES = 10;
+const MAX_FILE_SIZE_MB = 10;
+
 export default function UploadImages() {
   const navigate = useNavigate();
   const inputRef = useRef(null);
@@ -110,51 +120,82 @@ export default function UploadImages() {
         setProcessingStep(STAGES[index]);
         setStageProgress(Math.round((index / (STAGES.length - 1)) * 100));
       }
-    }, 1100);
+    }, STAGE_INTERVAL_MS);
 
     return () => clearInterval(interval);
   }, [loading]);
 
   /* ── INSPECTION METADATA HELPERS ── */
-  const updateMeta = (field, value) => {
+  const updateMeta = useCallback((field, value) => {
     setInspectionMeta(prev => ({ ...prev, [field]: value }));
-  };
+  }, []);
 
-  /* ── FILE HELPERS ── */
+  /* ── FILE HELPERS ──
+     Validates incoming files (type, count, size, duplicates) before
+     creating previews, so bad input is rejected with a clear message
+     instead of silently entering the gallery.
+  ── */
   const addFiles = useCallback((selected) => {
     const valid = Array.from(selected).filter(f => f.type.startsWith("image/"));
     if (!valid.length) return;
-    const entries = valid.map(f => ({
-      id: Math.random().toString(36).slice(2),
-      file: f,
-      preview: URL.createObjectURL(f),
-    }));
+
     setFiles(prev => {
+      // Maximum count check (against what's already uploaded)
+      if (prev.length + valid.length > MAX_IMAGES) {
+        setError(`Maximum ${MAX_IMAGES} images allowed.`);
+        return prev;
+      }
+
+      // Maximum file size check
+      const oversized = valid.find(
+        file => file.size > MAX_FILE_SIZE_MB * 1024 * 1024
+      );
+      if (oversized) {
+        setError(`${oversized.name} exceeds ${MAX_FILE_SIZE_MB} MB.`);
+        return prev;
+      }
+
+      // Duplicate prevention (by filename against existing uploads)
+      const existingNames = new Set(prev.map(f => f.file.name));
+      const uniqueFiles = valid.filter(file => !existingNames.has(file.name));
+
+      if (!uniqueFiles.length) {
+        setError("These image(s) have already been uploaded.");
+        return prev;
+      }
+
+      const entries = uniqueFiles.map(f => ({
+        id: crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2),
+        file: f,
+        preview: URL.createObjectURL(f),
+      }));
+
       const next = [...prev, ...entries];
       setActiveIdx(next.length - 1);
       return next;
     });
+
     setError("");
     setResult(null);
   }, []);
 
-  const removeFile = (id) => {
+  const removeFile = useCallback((id) => {
     setFiles(prev => {
       const next = prev.filter(f => f.id !== id);
       setActiveIdx(i => Math.min(i, Math.max(0, next.length - 1)));
       return next;
     });
-  };
+  }, []);
 
   /* ── UPLOAD STATISTICS ── */
   const totalSize = useMemo(() => {
     return files.reduce((sum, f) => sum + f.file.size, 0);
   }, [files]);
 
-  const formatBytes = (bytes) => {
+  const formatBytes = useCallback((bytes) => {
     if (!bytes) return "0 MB";
     return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-  };
+  }, []);
 
   /* ── INPUT ── */
   const handleInput = (e) => addFiles(e.target.files);
@@ -174,9 +215,24 @@ export default function UploadImages() {
      So every image must use fd.append("files", image.file).
      The old split of "file" (primary) + "files" (rest) caused a 422.
   ── */
-  const analyze = async () => {
+  const analyze = useCallback(async () => {
     if (!files.length) {
       setError("Upload at least one inspection image before analysis.");
+      return;
+    }
+
+    // Required metadata check — keeps every inspection record complete
+    // for downstream PDF/report generation and audit readiness.
+    if (!inspectionMeta.projectName.trim()) {
+      setError("Project Name is required.");
+      return;
+    }
+    if (!inspectionMeta.inspector.trim()) {
+      setError("Inspector name is required.");
+      return;
+    }
+    if (!inspectionMeta.siteLocation.trim()) {
+      setError("Site Location is required.");
       return;
     }
 
@@ -195,6 +251,12 @@ export default function UploadImages() {
 
       if (!data?.success) {
         throw new Error(data?.error || "Enterprise inspection failed.");
+      }
+
+      // Guard against backend regressions / shape drift before we
+      // start reading data.images[...] downstream.
+      if (!Array.isArray(data.images)) {
+        throw new Error("Unexpected server response.");
       }
 
       // The backend now returns { success, images: [...], ... }
@@ -216,24 +278,38 @@ export default function UploadImages() {
 
       setResult(data);
     } catch (err) {
-      console.error(err);
+      console.error("[UploadImages] Analysis failed", err);
       setError(err?.message || "Enterprise inspection service unavailable.");
     } finally {
       setLoading(false);
       setStageProgress(0);
     }
-  };
+  }, [files, activeIdx, inspectionMeta]);
 
-  /* ── RESET ── */
-  const reset = () => {
+  /* ── RESET ──
+     Clears uploaded files/results AND the inspection metadata form +
+     any persisted localStorage keys, so a reset doesn't leave stale
+     data behind for the next inspection run.
+  ── */
+  const reset = useCallback(() => {
     files.forEach(f => URL.revokeObjectURL(f.preview));
     setFiles([]);
     setActiveIdx(0);
     setResult(null);
     setError("");
     setInspectionId("");
+    setInspectionMeta({
+      projectName: "",
+      inspector: "",
+      siteLocation: "",
+      inspectionType: "Construction Quality",
+    });
+    localStorage.removeItem("qualityData");
+    localStorage.removeItem("inspectionMeta");
+    localStorage.removeItem("inspectionId");
+    localStorage.removeItem("qualityImagePreview");
     if (inputRef.current) inputRef.current.value = "";
-  };
+  }, [files]);
 
   /* ── DERIVED SUMMARY FROM FIRST PROCESSED IMAGE ──
      FIX: The backend wraps per-image results inside result.images[].
@@ -306,6 +382,19 @@ export default function UploadImages() {
   /* ── ACTIVE PREVIEW ── */
   const activePreview = files[activeIdx]?.preview || "";
 
+  /* ── OBJECT URL CLEANUP ──
+     Revokes preview blob URLs on unmount (or whenever the files array
+     changes identity) so leaving the page without hitting Reset
+     doesn't leak memory.
+  ── */
+  useEffect(() => {
+    return () => {
+      files.forEach(file => {
+        URL.revokeObjectURL(file.preview);
+      });
+    };
+  }, [files]);
+
   /* ── INSPECTION READINESS CHECKLIST ── */
   const readiness = useMemo(() => {
     const hasImages = files.length > 0;
@@ -368,33 +457,36 @@ export default function UploadImages() {
             }}
           >
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
-              Project Name
+              Project Name <span style={{ color: "#e5484d" }}>*</span>
               <input
                 type="text"
                 className="minimal-input"
                 placeholder="e.g. Riverside Tower Phase 2"
                 value={inspectionMeta.projectName}
                 onChange={(e) => updateMeta("projectName", e.target.value)}
+                required
               />
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
-              Inspector
+              Inspector <span style={{ color: "#e5484d" }}>*</span>
               <input
                 type="text"
                 className="minimal-input"
                 placeholder="Inspector name"
                 value={inspectionMeta.inspector}
                 onChange={(e) => updateMeta("inspector", e.target.value)}
+                required
               />
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
-              Site / Location
+              Site / Location <span style={{ color: "#e5484d" }}>*</span>
               <input
                 type="text"
                 className="minimal-input"
                 placeholder="e.g. Block C, Level 4"
                 value={inspectionMeta.siteLocation}
                 onChange={(e) => updateMeta("siteLocation", e.target.value)}
+                required
               />
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
@@ -496,17 +588,19 @@ export default function UploadImages() {
                   </div>
                 ))}
                 {/* Add more button */}
-                <div
-                  className="gallery-thumb"
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    cursor: "pointer", border: "1.5px dashed var(--border-hi)",
-                    background: "rgba(0,200,255,0.03)",
-                  }}
-                  onClick={() => inputRef.current?.click()}
-                >
-                  <FaPlus style={{ color: "var(--b)", fontSize: "1rem" }} />
-                </div>
+                {files.length < MAX_IMAGES && (
+                  <div
+                    className="gallery-thumb"
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      cursor: "pointer", border: "1.5px dashed var(--border-hi)",
+                      background: "rgba(0,200,255,0.03)",
+                    }}
+                    onClick={() => inputRef.current?.click()}
+                  >
+                    <FaPlus style={{ color: "var(--b)", fontSize: "1rem" }} />
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -536,8 +630,8 @@ export default function UploadImages() {
                 </div>
                 <div>
                   <strong title={files[0]?.file.name}>
-                    {files[0]?.file.name?.length > 22
-                      ? `${files[0].file.name.slice(0, 19)}...`
+                    {files[0]?.file.name?.length > MAX_FILENAME_LENGTH
+                      ? `${files[0].file.name.slice(0, TRUNCATED_FILENAME_LENGTH)}...`
                       : files[0]?.file.name}
                   </strong>
                   <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>Primary Image</div>

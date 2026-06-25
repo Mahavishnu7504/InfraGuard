@@ -42,20 +42,21 @@ import { API_BASE } from "../../services/api";
 import "../quality.css";
 
 /* ── Workflow progress ─────────────────────────────────────────── */
+const WORKFLOW_STEPS = [
+  { key: "overview", label: "Overview" },
+  { key: "upload", label: "Upload" },
+  { key: "practices", label: "Practices" },
+  { key: "report", label: "Report" },
+];
+
 function WorkflowProgress({ current = 3 }) {
-  const steps = [
-    { label: "Overview" },
-    { label: "Upload" },
-    { label: "Practices" },
-    { label: "Report" },
-  ];
   return (
     <div className="workflow-progress">
-      {steps.map((s, i) => {
+      {WORKFLOW_STEPS.map((s, i) => {
         const isDone = i < current;
         const isActive = i === current;
         return (
-          <div key={i} className={`wp-step ${isActive ? "active" : ""} ${isDone ? "done" : ""}`}>
+          <div key={s.key} className={`wp-step ${isActive ? "active" : ""} ${isDone ? "done" : ""}`}>
             {i > 0 && <div className={`wp-connector ${isDone ? "done" : ""}`} />}
             <div className={`wp-bubble ${isActive ? "active" : ""} ${isDone ? "done" : ""}`}>
               {isDone ? <FaCheckCircle style={{ fontSize: "0.65rem" }} /> : `0${i + 1}`}
@@ -301,7 +302,7 @@ function ImageBlock({ imgData, index }) {
               <div className="report-section-header" style={{ marginBottom: 8 }}>
                 <FaBolt /> Original Image
               </div>
-              <img src={originalUrl} className="report-image" alt={`${label} original`} />
+              <img src={originalUrl} className="report-image" alt={`${label} original`} loading="lazy" />
             </PageCard>
           )}
           {annotatedUrl && (
@@ -309,7 +310,7 @@ function ImageBlock({ imgData, index }) {
               <div className="report-section-header" style={{ marginBottom: 8 }}>
                 <FaBrain /> AI Annotated
               </div>
-              <img src={annotatedUrl} className="report-image" alt={`${label} annotated`} />
+              <img src={annotatedUrl} className="report-image" alt={`${label} annotated`} loading="lazy" />
             </PageCard>
           )}
         </div>
@@ -338,7 +339,7 @@ function ImageBlock({ imgData, index }) {
         ) : (
           <div className="enterprise-findings">
             {findings.map((item, i) => (
-              <div key={i} className="enterprise-finding">
+              <div key={`${item?.issue_type || "finding"}-${item?.severity || "na"}-${i}`} className="enterprise-finding">
                 <div className="finding-top">
                   <h3>{(item?.issue_type || "Finding").replaceAll("_", " ")}</h3>
                   <div className={`severity-chip ${severityClass(item?.severity)}`}>
@@ -389,14 +390,18 @@ function ImageBlock({ imgData, index }) {
 }
 
 /* ── PHASE 1 — Inspection Metadata Block ───────────────────────── */
-function InspectionMetadataCard({ meta }) {
-  const fields = [
-    { icon: <FaHashtag />, label: "Inspection ID", value: meta?.inspectionId || meta?.inspection_id },
-    { icon: <FaClipboardCheck />, label: "Project Name", value: meta?.projectName || meta?.project_name },
-    { icon: <FaMapMarkerAlt />, label: "Site Location", value: meta?.siteLocation || meta?.site_location },
-    { icon: <FaUserTie />, label: "Inspector", value: meta?.inspector || meta?.inspectorName },
-    { icon: <FaCalendarAlt />, label: "Inspection Date", value: meta?.inspectionDate || meta?.date },
+function getMetadataFields(meta) {
+  return [
+    { key: "inspectionId", icon: <FaHashtag />, label: "Inspection ID", value: meta?.inspectionId || meta?.inspection_id },
+    { key: "projectName", icon: <FaClipboardCheck />, label: "Project Name", value: meta?.projectName || meta?.project_name },
+    { key: "siteLocation", icon: <FaMapMarkerAlt />, label: "Site Location", value: meta?.siteLocation || meta?.site_location },
+    { key: "inspector", icon: <FaUserTie />, label: "Inspector", value: meta?.inspector || meta?.inspectorName },
+    { key: "inspectionDate", icon: <FaCalendarAlt />, label: "Inspection Date", value: meta?.inspectionDate || meta?.date },
   ];
+}
+
+function InspectionMetadataCard({ meta }) {
+  const fields = getMetadataFields(meta);
 
   return (
     <PageCard className="minimal-report-card" style={{ marginBottom: 20 }}>
@@ -410,8 +415,8 @@ function InspectionMetadataCard({ meta }) {
           gap: "14px 20px",
         }}
       >
-        {fields.map((f, i) => (
-          <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+        {fields.map((f) => (
+          <div key={f.key} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
             <div style={{ opacity: 0.65, marginTop: 2 }}>{f.icon}</div>
             <div>
               <div style={{ fontSize: "0.75rem", opacity: 0.6, marginBottom: 2 }}>
@@ -427,39 +432,49 @@ function InspectionMetadataCard({ meta }) {
 }
 
 /* ── PHASE 2 — Executive KPI Dashboard (6 cards) ───────────────── */
-function ExecutiveKpiDashboard({ data, totalImages, totalFinds }) {
-  const cards = [
+function getKpiCards(data, totalImages, totalFinds) {
+  return [
     {
+      key: "compliance",
       icon: <FaShieldAlt />,
       value: data?.compliance_score != null ? `${data.compliance_score}/100` : "—",
       label: "Compliance Score",
     },
     {
+      key: "grade",
       icon: <FaCheckCircle />,
       value: data?.inspection_grade || "—",
       label: "Inspection Grade",
     },
     {
+      key: "risk",
       icon: <FaExclamationTriangle />,
       value: data?.overall_risk || "—",
       label: "Overall Risk",
     },
     {
+      key: "audit",
       icon: <FaUserShield />,
       value: data?.audit_readiness || "Pending Review",
       label: "Audit Readiness",
     },
     {
+      key: "findings",
       icon: <FaFileAlt />,
       value: data?.total_findings ?? totalFinds,
       label: "Total Findings",
     },
     {
+      key: "images",
       icon: <FaImage />,
       value: data?.total_images_processed ?? totalImages,
       label: "Images Processed",
     },
   ];
+}
+
+function ExecutiveKpiDashboard({ data, totalImages, totalFinds }) {
+  const cards = getKpiCards(data, totalImages, totalFinds);
 
   return (
     <div
@@ -471,8 +486,8 @@ function ExecutiveKpiDashboard({ data, totalImages, totalFinds }) {
         gap: 14,
       }}
     >
-      {cards.map((c, i) => (
-        <PageCard key={i} className="executive-card">
+      {cards.map((c) => (
+        <PageCard key={c.key} className="executive-card">
           {c.icon}
           <div>
             <h3>{c.value}</h3>
@@ -524,8 +539,8 @@ function SeverityDistributionSection({ counts }) {
                   outerRadius={85}
                   paddingAngle={2}
                 >
-                  {data.map((d, i) => (
-                    <Cell key={i} fill={severityColor(d.name)} />
+                  {data.map((d) => (
+                    <Cell key={d.name} fill={severityColor(d.name)} />
                   ))}
                 </Pie>
                 <RechartsTooltip />
@@ -536,10 +551,10 @@ function SeverityDistributionSection({ counts }) {
           {/* Progress-bar style breakdown — doubles as a fallback if the
               pie chart's container has zero width on first paint. */}
           <div style={{ flex: 1, minWidth: 220 }}>
-            {data.map((d, i) => {
+            {data.map((d) => {
               const pct = total > 0 ? Math.round((d.value / total) * 100) : 0;
               return (
-                <div key={i} style={{ marginBottom: 10 }}>
+                <div key={d.name} style={{ marginBottom: 10 }}>
                   <div
                     style={{
                       display: "flex",
@@ -627,16 +642,16 @@ function CorrectiveActionMatrix({ images, fallbackReport }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.88rem" }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.12)" }}>
-                <th style={{ padding: "8px 10px" }}>Issue</th>
-                <th style={{ padding: "8px 10px" }}>Severity</th>
-                <th style={{ padding: "8px 10px" }}>Priority</th>
-                <th style={{ padding: "8px 10px" }}>Owner</th>
-                <th style={{ padding: "8px 10px" }}>Action</th>
+                <th scope="col" style={{ padding: "8px 10px" }}>Issue</th>
+                <th scope="col" style={{ padding: "8px 10px" }}>Severity</th>
+                <th scope="col" style={{ padding: "8px 10px" }}>Priority</th>
+                <th scope="col" style={{ padding: "8px 10px" }}>Owner</th>
+                <th scope="col" style={{ padding: "8px 10px" }}>Action</th>
               </tr>
             </thead>
             <tbody>
               {findings.map((item, i) => (
-                <tr key={i} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                <tr key={`${item?.issue_type || "finding"}-${item?.severity || "na"}-${i}`} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                   <td style={{ padding: "8px 10px" }}>
                     {(item?.issue_type || "Finding").replaceAll("_", " ")}
                   </td>
@@ -674,8 +689,8 @@ function ExecutiveRiskSummary({ topRisks }) {
         </p>
       ) : (
         <ol style={{ margin: 0, paddingLeft: 20 }}>
-          {topRisks.map((r, i) => (
-            <li key={i} style={{ marginBottom: 8 }}>
+          {topRisks.map((r) => (
+            <li key={r.issue_type} style={{ marginBottom: 8 }}>
               <span style={{ fontWeight: 600 }}>
                 {r.issue_type.replaceAll("_", " ")}
               </span>{" "}
@@ -765,13 +780,17 @@ function ConfidenceAnalyticsPanel({ analytics }) {
 }
 
 /* ── PHASE 9 — Report Readiness Section ────────────────────────── */
-function ReportReadinessSection({ hasFindings, hasImages }) {
-  const checks = [
-    { label: "Inspection Completed", done: hasImages },
-    { label: "Findings Validated", done: hasFindings },
-    { label: "Recommendations Generated", done: hasFindings },
-    { label: "PDF Ready", done: hasImages },
+function getReadinessChecks(hasFindings, hasImages) {
+  return [
+    { key: "completed", label: "Inspection Completed", done: hasImages },
+    { key: "validated", label: "Findings Validated", done: hasFindings },
+    { key: "recommendations", label: "Recommendations Generated", done: hasFindings },
+    { key: "pdf", label: "PDF Ready", done: hasImages },
   ];
+}
+
+function ReportReadinessSection({ hasFindings, hasImages }) {
+  const checks = getReadinessChecks(hasFindings, hasImages);
 
   return (
     <PageCard className="minimal-report-card" style={{ marginBottom: 20 }}>
@@ -779,9 +798,9 @@ function ReportReadinessSection({ hasFindings, hasImages }) {
         <FaClipboardCheck /> Report Readiness
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-        {checks.map((c, i) => (
+        {checks.map((c) => (
           <div
-            key={i}
+            key={c.key}
             style={{
               display: "flex",
               alignItems: "center",
@@ -799,13 +818,13 @@ function ReportReadinessSection({ hasFindings, hasImages }) {
 }
 
 /* ── PHASE 10 — Management Sign-Off Preview ────────────────────── */
-function ManagementSignOffPreview() {
-  const rows = [
-    { icon: <FaUserTie />, label: "Prepared By" },
-    { icon: <FaUserClock />, label: "Reviewed By" },
-    { icon: <FaUserShield />, label: "Approved By" },
-  ];
+const SIGNOFF_ROWS = [
+  { key: "preparedBy", icon: <FaUserTie />, label: "Prepared By" },
+  { key: "reviewedBy", icon: <FaUserClock />, label: "Reviewed By" },
+  { key: "approvedBy", icon: <FaUserShield />, label: "Approved By" },
+];
 
+function ManagementSignOffPreview() {
   return (
     <PageCard className="minimal-report-card" style={{ marginBottom: 20 }}>
       <div className="report-section-header" style={{ marginBottom: 14 }}>
@@ -818,8 +837,8 @@ function ManagementSignOffPreview() {
           gap: 18,
         }}
       >
-        {rows.map((r, i) => (
-          <div key={i}>
+        {SIGNOFF_ROWS.map((r) => (
+          <div key={r.key}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, opacity: 0.7, marginBottom: 6 }}>
               {r.icon}
               <span style={{ fontSize: "0.8rem" }}>{r.label}</span>
@@ -878,7 +897,13 @@ export default function GenerateReport() {
 
   /* ── Load persisted data ── */
   const data = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem("qualityData") || "{}"); } catch { return {}; }
+    const stored = localStorage.getItem("qualityData");
+    if (!stored) return {};
+    try {
+      return JSON.parse(stored) || {};
+    } catch {
+      return {};
+    }
   }, []);
 
   /*
@@ -946,15 +971,22 @@ export default function GenerateReport() {
 
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
+      const projectName = (inspectionMeta?.projectName || inspectionMeta?.project_name || "")
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/[^a-zA-Z0-9_-]/g, "");
+      const filenameParts = ["InfraGuard"];
+      if (projectName) filenameParts.push(projectName);
+      filenameParts.push(inspectionMeta?.inspectionId || Date.now());
       const a = document.createElement("a");
       a.href = url;
-      a.download = `InfraGuard_Report_${inspectionMeta?.inspectionId || Date.now()}.pdf`;
+      a.download = `${filenameParts.join("_")}.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error("Failed to download report:", err);
+      console.error("[GenerateReport] PDF download failed:", err);
       setDownloadError(
         "PDF generation failed. Please try again or contact support if the issue persists."
       );
@@ -1095,7 +1127,11 @@ export default function GenerateReport() {
 
           {images.length > 0 ? (
             images.map((imgData, i) => (
-              <ImageBlock key={i} imgData={imgData} index={i} />
+              <ImageBlock
+                key={imgData?.image_index ?? imgData?.image_label ?? i}
+                imgData={imgData}
+                index={i}
+              />
             ))
           ) : (
             /* Fallback: single-image legacy data that may still carry a

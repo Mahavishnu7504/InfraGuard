@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   FaArrowRight, FaCheckCircle,
   FaInfoCircle, FaTimes, FaFileAlt,
@@ -44,17 +44,48 @@ function PDot() {
   return <span className="pdot-qa" />;
 }
 
+/* ── Hoisted outside the component so it isn't recreated every render (Priority 2) ── */
+const WORKFLOW_ITEMS = [
+  { step: "01", title: "Upload Image", desc: "Drag & drop or select inspection images" },
+  { step: "02", title: "AI Analysis", desc: "Vision model scans for defects & risks" },
+  { step: "03", title: "Review Findings", desc: "Per-image findings, severity & compliance score" },
+  { step: "04", title: "Best Practices", desc: "Issue-specific corrective & preventive actions" },
+  { step: "05", title: "Executive Report", desc: "PDF-ready findings with AI recommendations" },
+];
+
 export default function QualityAssurance() {
   const navigate = useNavigate();
   const [showWorkflow, setShowWorkflow] = useState(false);
 
-  const workflow = [
-    { step: "01", title: "Upload Image", desc: "Drag & drop or select inspection images" },
-    { step: "02", title: "AI Analysis", desc: "Vision model scans for defects & risks" },
-    { step: "03", title: "Review Findings", desc: "Per-image findings, severity & compliance score" },
-    { step: "04", title: "Best Practices", desc: "Issue-specific corrective & preventive actions" },
-    { step: "05", title: "Executive Report", desc: "PDF-ready findings with AI recommendations" },
-  ];
+  // Refs for focus management (Priority 5)
+  const howItWorksBtnRef = useRef(null);
+  const closeBtnRef = useRef(null);
+
+  const openWorkflow = useCallback(() => setShowWorkflow(true), []);
+  const closeWorkflow = useCallback(() => setShowWorkflow(false), []);
+
+  // Escape key closes modal (Priority 4)
+  useEffect(() => {
+    if (!showWorkflow) return;
+
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        closeWorkflow();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [showWorkflow, closeWorkflow]);
+
+  // Focus the close button on open, return focus to trigger on close (Priority 5)
+  useEffect(() => {
+    if (showWorkflow) {
+      closeBtnRef.current?.focus();
+    } else {
+      howItWorksBtnRef.current?.focus();
+    }
+  }, [showWorkflow]);
 
   return (
     <PageLayout>
@@ -94,19 +125,25 @@ export default function QualityAssurance() {
             <div className="quality-actions">
               <button
                 className="quality-primary-btn"
+                aria-label="Start Inspection"
                 onClick={() => navigate("/quality/upload")}
               >
                 Start Inspection <FaArrowRight />
               </button>
               <button
                 className="quality-secondary-btn"
+                aria-label="Open Reports"
                 onClick={() => navigate("/quality/report")}
               >
                 <FaFileAlt /> Reports
               </button>
               <button
+                ref={howItWorksBtnRef}
                 className="quality-secondary-btn"
-                onClick={() => setShowWorkflow(true)}
+                aria-label="Open Workflow"
+                aria-haspopup="dialog"
+                aria-expanded={showWorkflow}
+                onClick={openWorkflow}
               >
                 <FaInfoCircle /> How it works
               </button>
@@ -122,10 +159,13 @@ export default function QualityAssurance() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setShowWorkflow(false)}
+              onClick={closeWorkflow}
             >
               <motion.div
                 className="workflow-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Inspection Workflow"
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
@@ -134,13 +174,18 @@ export default function QualityAssurance() {
               >
                 <div className="workflow-modal-header">
                   <h2>Inspection Workflow</h2>
-                  <button className="close-btn" onClick={() => setShowWorkflow(false)}>
+                  <button
+                    ref={closeBtnRef}
+                    className="close-btn"
+                    aria-label="Close workflow dialog"
+                    onClick={closeWorkflow}
+                  >
                     <FaTimes />
                   </button>
                 </div>
                 <div className="workflow-grid">
-                  {workflow.map((item, i) => (
-                    <div key={i} className="workflow-item">
+                  {WORKFLOW_ITEMS.map((item) => (
+                    <div key={item.step} className="workflow-item">
                       <span>{item.step}</span>
                       <h3>{item.title}</h3>
                       <p style={{ fontFamily: "var(--mono)", fontSize: "0.62rem", color: "var(--tx2)", marginTop: 6, lineHeight: 1.7 }}>

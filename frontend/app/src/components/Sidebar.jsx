@@ -6,18 +6,19 @@ import {
 
 import "./sidebar.css";
 
-export default function Sidebar() {
+const MENU_ITEMS = [
+  { label: "Dashboard", icon: <FaHome />, path: "/dashboard" },
+  { label: "Live Monitoring", icon: <FaVideo />, path: "/safety/live" },
+  { label: "Safety Detection", icon: <FaSearch />, path: "/safety/detection" },
+  { label: "Quality Inspection", icon: <FaClipboardCheck />, path: "/quality/upload" },
+];
 
-  const menuItems = [
-    { label: "Dashboard", icon: <FaHome />, path: "/dashboard" },
-    { label: "Live Monitoring", icon: <FaVideo />, path: "/safety/live" },
-    { label: "Safety Detection", icon: <FaSearch />, path: "/safety/detection" },
-    { label: "Quality Inspection", icon: <FaClipboardCheck />, path: "/quality/upload" },
-  ];
+export default function Sidebar() {
 
   return (
     <motion.aside
       className="sidebar"
+      aria-label="Application Sidebar"
       initial={{ x: -40, opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
       transition={{ duration: 0.4 }}
@@ -32,8 +33,8 @@ export default function Sidebar() {
           </div>
         </div>
 
-        <nav className="sidebar-nav">
-          {menuItems.map((item) => (
+        <nav className="sidebar-nav" aria-label="Main navigation">
+          {MENU_ITEMS.map((item) => (
             <NavLink
               key={item.path}
               to={item.path}

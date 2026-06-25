@@ -467,6 +467,16 @@
   color: var(--b);
 }
 
+.quality-primary-btn:focus-visible,
+.primary-btn:focus-visible,
+.quality-secondary-btn:focus-visible,
+.secondary-btn:focus-visible,
+.close-btn:focus-visible {
+  outline: 2px solid var(--b);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgba(0, 200, 255, 0.18);
+}
+
 .hero-actions {
   display: flex;
   gap: 12px;
@@ -1064,6 +1074,19 @@
   object-fit: contain;
   border-radius: var(--r-lg);
   background: #000;
+  transition:
+    transform var(--t-normal),
+    box-shadow var(--t-normal);
+}
+
+.report-image:hover {
+  transform: scale(1.01);
+  box-shadow: var(--shadow-b);
+}
+
+.report-table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .executive-summary-text {
@@ -1402,6 +1425,12 @@
   .wp-connector {
     min-width: 16px;
   }
+
+  .hero-right,
+  .quality-operational-card,
+  .hero-score {
+    width: 100%;
+  }
 }
 
 @media (max-width: 640px) {
@@ -1453,12 +1482,22 @@
   }
 
   .hero-actions,
-  .workflow-progress {
-    display: none;
+  .workflow-progress,
+  .quality-actions,
+  .quality-primary-btn,
+  .quality-secondary-btn,
+  .close-btn {
+    display: none !important;
   }
 
   .enterprise-finding {
     break-inside: avoid;
+  }
+
+  .qa,
+  .minimal-page {
+    background: #ffffff;
+    color: #000000;
   }
 }
 
@@ -1470,4 +1509,41 @@
 .quality-hero--centered {
   max-width: 900px;
   margin: 0 auto 24px;
+}
+
+/* ── ACCESSIBILITY: reduced motion ──────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── SELECTION COLOR ─────────────────────────────────────────────── */
+::selection {
+  background: rgba(0, 200, 255, 0.30);
+  color: #ffffff;
+}
+
+/* ── CUSTOM SCROLLBAR (optional) ─────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-hi);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--b);
 }

@@ -87,3 +87,7 @@
     grid-template-columns: 1fr;
   }
 }
+
+.analytics-card:focus-within {
+  outline: 2px solid var(--b);
+}
