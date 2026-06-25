@@ -188,6 +188,17 @@
   transform: translateY(-2px);
 }
 
+.db__nav-btn:focus-visible {
+  outline: 2px solid var(--b);
+  outline-offset: 2px;
+}
+
+.db__nav-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+  filter: grayscale(0.3);
+}
+
 .db__nav-btn svg {
   font-size: 0.78rem;
 }
@@ -290,6 +301,16 @@
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
   padding: 24px;
+  transition:
+    transform 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.db__panel:hover {
+  transform: translateY(-3px);
+  border-color: rgba(0, 200, 255, 0.16);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
 }
 
 .db__panel-title {
@@ -327,6 +348,7 @@
 
 .db__incident:hover {
   background: rgba(255, 255, 255, 0.04);
+  transform: translateX(4px);
 }
 
 .db__incident--high {
@@ -403,6 +425,14 @@
   border-radius: var(--r-lg);
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid var(--border);
+  transition:
+    background 0.2s,
+    transform 0.2s;
+}
+
+.db__telem-cell:hover {
+  background: rgba(255, 255, 255, 0.04);
+  transform: translateY(-2px);
 }
 
 .db__telem-label {
@@ -440,5 +470,39 @@
 
   .db__hdr {
     flex-direction: column;
+  }
+}
+
+@media (max-width: 480px) {
+  .db {
+    padding: 18px;
+  }
+
+  .db__nav {
+    flex-direction: column;
+  }
+
+  .db__nav-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .db__panel {
+    padding: 18px;
+  }
+
+  .db__h1 {
+    font-size: 2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  .db *,
+  .db *::before,
+  .db *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
   }
 }

@@ -130,6 +130,16 @@
   padding: 24px;
   position: relative;
   overflow: hidden;
+  transition:
+    transform 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.id__panel:hover {
+  transform: translateY(-3px);
+  border-color: rgba(0, 200, 255, 0.18);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
 }
 
 .id__panel-title {
@@ -200,6 +210,13 @@
   transform: translateY(-2px);
 }
 
+/* Reserved hook for drag-and-drop interactions (apply via JS on
+   dragenter/dragleave) — no JSX change needed when adopting this. */
+.id__dropzone--drag {
+  border-color: var(--b);
+  background: rgba(0, 200, 255, 0.12);
+}
+
 .id__dropzone-icon {
   width: 48px;
   height: 48px;
@@ -253,7 +270,9 @@
 
 .id__btn:disabled {
   opacity: 0.3;
+  filter: grayscale(0.2);
   cursor: not-allowed;
+  pointer-events: none;
   transform: none !important;
 }
 
@@ -270,6 +289,9 @@
 
 /* NOTE */
 .id__note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 12px 16px;
   border-radius: var(--r-md);
   background: rgba(239, 68, 68, 0.08);
@@ -341,6 +363,13 @@
   max-height: 560px;
   object-fit: contain;
   display: block;
+  transition:
+    transform 0.35s ease,
+    box-shadow 0.35s ease;
+}
+
+.id__feed-img:hover {
+  transform: scale(1.01);
 }
 
 .id__feed-img--alert {
@@ -452,6 +481,14 @@
   border-radius: var(--r-xl);
   background: var(--bg1);
   border: 1px solid var(--border);
+  transition:
+    transform 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.id__sum-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(0, 200, 255, 0.2);
 }
 
 .id__sum-icon {
@@ -517,6 +554,8 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
 }
 
 .id__finding {
@@ -525,6 +564,11 @@
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid var(--border);
   border-left: 3px solid var(--fc, var(--tx3));
+  transition: transform 0.25s ease;
+}
+
+.id__finding:hover {
+  transform: translateX(3px);
 }
 
 .id__finding--high {
@@ -599,5 +643,32 @@
 
   .id__mini-kpi {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width:480px) {
+  .id {
+    padding: 20px 16px 48px;
+  }
+
+  .id__summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .id__panel {
+    padding: 18px;
+  }
+
+  .id__dropzone {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .id__panel:hover {
+    transform: none;
+  }
+
+  .id__feed-img:hover {
+    transform: none;
   }
 }

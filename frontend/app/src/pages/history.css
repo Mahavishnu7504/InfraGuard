@@ -283,7 +283,7 @@
     background: var(--bg1);
     border: 1px solid var(--border);
     border-left: 3px solid var(--ic, var(--tx3));
-    transition: transform 0.22s, background 0.18s;
+    transition: transform 0.22s ease, background 0.18s ease, border-color 0.22s ease;
 }
 
 .hp__item:hover {

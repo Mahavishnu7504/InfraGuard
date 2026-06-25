@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import {
   FaBroadcastTower, FaPlay, FaStop, FaShieldAlt,
-  FaPlus, FaTrash, FaVideo, FaWifi, FaExclamationTriangle,
+  FaPlus, FaVideo, FaExclamationTriangle,
   FaServer, FaBolt, FaEye, FaTimes, FaCheck,
 } from "react-icons/fa";
 import { MdOutlineGridView, MdGrid3X3, MdGridOn } from "react-icons/md";
@@ -136,6 +136,7 @@ function CameraPanel({ cam, onStart, onStop, onRemove }) {
   };
 
   const handleStart = async () => {
+    if (running || loading) return;
     setError(false); setLoading(true);
     const ok = await onStart(cam.id);
     setLoading(false);
@@ -144,6 +145,7 @@ function CameraPanel({ cam, onStart, onStop, onRemove }) {
   };
 
   const handleStop = async () => {
+    if (!running || loading) return;
     clearTimeout(retryTimeoutRef.current);
     retryCountRef.current = 0;
     await onStop(cam.id);
@@ -198,7 +200,7 @@ function CameraPanel({ cam, onStart, onStop, onRemove }) {
           <div className={`cp__badge${running ? " cp__badge--live" : " cp__badge--off"}`}>
             {running ? <><PulseDot />&nbsp;LIVE</> : "OFFLINE"}
           </div>
-          <button className="cp__del" title="Remove" onClick={() => { handleStop(); onRemove(cam.id); }}>
+          <button className="cp__del" title="Remove" onClick={() => { if (window.confirm(`Remove ${cam.name}?`)) { handleStop(); onRemove(cam.id); } }}>
             <FaTimes />
           </button>
         </div>
@@ -286,6 +288,8 @@ function AddCameraModal({ existing, onAdd, onClose }) {
     const id = parseInt(camId, 10);
     if (isNaN(id) || id < 0 || id > 99) { setErr("Camera ID must be 0–99"); return; }
     if (existing.includes(id)) { setErr(`ID ${id} already registered`); return; }
+    if (name && !name.trim()) { setErr("Display name can't be just spaces"); return; }
+    if (loc && !loc.trim()) { setErr("Location can't be just spaces"); return; }
     onAdd({ id, name: name.trim() || `Camera ${String(id).padStart(2, "0")}`, location: loc.trim() || `Camera ${id}` });
     onClose();
   };

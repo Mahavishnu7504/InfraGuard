@@ -329,17 +329,31 @@
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   overflow: hidden;
-  transition: border-color 0.3s, box-shadow 0.3s;
+  transition: border-color 0.3s, box-shadow 0.3s, transform 0.25s ease;
 }
 
 .cp:hover {
   border-color: rgba(0, 200, 255, 0.15);
   box-shadow: 0 0 0 1px rgba(0, 200, 255, 0.06), 0 24px 60px rgba(0, 0, 0, 0.5);
+  transform: translateY(-3px);
 }
 
 .cp--live {
   border-color: rgba(0, 255, 157, 0.2);
   box-shadow: 0 0 0 1px rgba(0, 255, 157, 0.06);
+  animation: live-glow 3s ease-in-out infinite;
+}
+
+@keyframes live-glow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(0, 255, 157, 0.06);
+  }
+
+  50% {
+    box-shadow: 0 0 0 1px rgba(0, 255, 157, 0.16), 0 0 24px rgba(0, 255, 157, 0.08);
+  }
 }
 
 .cp--err {
@@ -374,7 +388,7 @@
 
 .slot-icon {
   font-size: 1.8rem;
-  opacity: 0.3;
+  opacity: 0.5;
 }
 
 /* ── HUD CORNERS ──────────────────────────────────────── */
@@ -521,6 +535,7 @@
 .cp__del:hover {
   background: rgba(239, 68, 68, 0.16);
   color: var(--r);
+  transform: scale(1.08);
 }
 
 /* ── VIEWPORT ─────────────────────────────────────────── */
@@ -537,6 +552,11 @@
   height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform 0.35s ease, filter 0.35s ease;
+}
+
+.cp:hover .cp__feed {
+  transform: scale(1.01);
 }
 
 /* Scanlines */
@@ -591,6 +611,19 @@
   letter-spacing: 0.1em;
   backdrop-filter: blur(8px);
   z-index: 5;
+  animation: ai-chip-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes ai-chip-pulse {
+
+  0%,
+  100% {
+    border-color: rgba(0, 255, 157, 0.2);
+  }
+
+  50% {
+    border-color: rgba(0, 255, 157, 0.45);
+  }
 }
 
 /* risk badge overlay */
@@ -703,8 +736,10 @@
 }
 
 .cp__btn:disabled {
-  opacity: 0.25;
+  opacity: 0.35;
   cursor: not-allowed;
+  filter: grayscale(0.25);
+  pointer-events: none;
   transform: none !important;
 }
 
@@ -745,6 +780,11 @@
   align-items: center;
   padding: 10px 6px;
   border-right: 1px solid var(--border);
+  transition: background 0.2s;
+}
+
+.cp__t-cell:hover {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .cp__t-cell:last-child {
@@ -845,6 +885,7 @@
   border: 1px solid var(--border-hi);
   border-radius: var(--r-lg);
   overflow: hidden;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55);
 }
 
 .mbox__hd {
@@ -1030,6 +1071,11 @@
   pointer-events: auto;
   border: 1px solid transparent;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  transition: transform 0.2s ease;
+}
+
+.lp__toast:hover {
+  transform: translateX(-3px);
 }
 
 .lp__toast-ico {
@@ -1093,5 +1139,48 @@
 
   .lp__gcols {
     display: none;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   SMALL PHONES
+══════════════════════════════════════════════════════════ */
+@media (max-width: 480px) {
+  .lp {
+    padding: 18px;
+  }
+
+  .lp__clock-t {
+    font-size: 1.2rem;
+  }
+
+  .cp__ctrl {
+    grid-template-columns: 1fr;
+  }
+
+  .mbox {
+    max-width: 100%;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   ACCESSIBILITY — FOCUS & MOTION
+══════════════════════════════════════════════════════════ */
+.lp__add:focus-visible,
+.cp__btn:focus-visible,
+.mbox__add:focus-visible,
+.mbox__cancel:focus-visible,
+.mbox__x:focus-visible,
+.cp__del:focus-visible,
+.lp__gcol-btn:focus-visible,
+.mbox__bd input:focus-visible {
+  outline: 2px solid var(--b);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
   }
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FaUpload, FaShieldAlt, FaSearch,
   FaExclamationTriangle, FaCheckCircle, FaChartBar,
@@ -6,13 +6,17 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 
 import PageLayout from "../components/PageLayout";
-import PageCard from "../components/PageCard";
 import { API_BASE } from "../services/api";
 import "./infraDetection.css";
 
 /* ─── risk helpers ──────────────────────────────────────── */
 const FC = { HIGH: "id__finding--high", MEDIUM: "id__finding--medium", LOW: "id__finding--low" };
 const fc = (r) => FC[(r || "LOW").toUpperCase()] || FC.LOW;
+
+/* ─── upload constraints ────────────────────────────────── */
+const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 export default function InfraDetection() {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -21,6 +25,19 @@ export default function InfraDetection() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+
+  // Tracks the object URL currently in use so it can be revoked on
+  // replacement/unmount without retriggering effects off `preview` itself.
+  const previewUrlRef = useRef(null);
+
+  /* ── revoke any outstanding object URL on unmount ──────── */
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+      }
+    };
+  }, []);
 
   /* ── findings (same logic) ─────────────────────────── */
   const findings = useMemo(() => {
@@ -39,31 +56,55 @@ export default function InfraDetection() {
     low: findings.filter(x => x.severity === "LOW").length,
   }), [findings]);
 
-  /* ── file upload (same logic) ──────────────────────── */
+  /* ── file upload (validated + leak-safe) ───────────── */
   const handleUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      setError("Unsupported file type. Please upload a JPG, PNG, or WEBP image.");
+      e.target.value = "";
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setError(`File too large. Maximum size is ${MAX_FILE_SIZE_MB}MB.`);
+      e.target.value = "";
+      return;
+    }
+
+    // Revoke the previous preview URL before creating a new one.
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    previewUrlRef.current = objectUrl;
+
     setSelectedFile(file);
-    setPreview(URL.createObjectURL(file));
+    setPreview(objectUrl);
     setAnnotatedPreview(null);
     setResult(null);
     setError("");
   };
 
-  /* ── detection (same logic) ────────────────────────── */
+  /* ── detection (guarded + better error surfacing) ──── */
   const runDetection = async () => {
     if (!selectedFile) { alert("Upload image first"); return; }
+    if (loading) return; // prevent duplicate/rapid-fire requests
+
     setLoading(true); setError("");
     try {
       const fd = new FormData();
       fd.append("file", selectedFile);
       const res = await fetch(`${API_BASE}/safety/detect-full`, { method: "POST", body: fd });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail);
+      if (!res.ok) throw new Error(data?.detail || `Request failed (${res.status})`);
       setResult(data);
       setAnnotatedPreview(`data:image/jpeg;base64,${data.image}`);
-    } catch {
-      setError("Server waking up — try again in a few seconds.");
+    } catch (err) {
+      console.error("Detection request failed:", err);
+      setError(err?.message || "Server waking up — try again in a few seconds.");
     } finally {
       setLoading(false);
     }
