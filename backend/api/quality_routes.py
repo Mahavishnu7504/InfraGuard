@@ -4,10 +4,11 @@
 
 import uuid
 import shutil
+import logging
 import traceback
 
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 import cv2
@@ -22,6 +23,9 @@ from fastapi import (
 
 from fastapi.responses import FileResponse
 
+from pydantic import BaseModel
+from typing import Optional, Any
+
 from backend.services.quality.analysis_service import (
     analyze_quality
 )
@@ -29,6 +33,12 @@ from backend.services.quality.analysis_service import (
 from backend.services.quality.pdf_service import (
     generate_quality_pdf
 )
+
+# =========================================================
+# LOGGER                                  (Priority 3)
+# =========================================================
+
+logger = logging.getLogger(__name__)
 
 # =========================================================
 # ROUTER
@@ -70,9 +80,53 @@ ALLOWED_EXTENSIONS = {
     ".png"
 }
 
+# Priority 1 — MIME type whitelist
+ALLOWED_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+}
+
 MAX_FILE_SIZE = (
     10 * 1024 * 1024
 )
+
+# Priority 6 — server-side image count cap
+MAX_IMAGES = 20
+
+# =========================================================
+# PYDANTIC REQUEST MODEL                  (Priority 9)
+# =========================================================
+
+class ImagePayload(BaseModel):
+    image_id:              Optional[str]  = None
+    image_index:           Optional[int]  = None
+    original_filename:     Optional[str]  = None
+    report:                Optional[list] = None
+    overall_status:        Optional[str]  = None
+    compliance_score:      Optional[Any]  = None
+    inspection_grade:      Optional[str]  = None
+    overall_risk:          Optional[str]  = None
+    executive_summary:     Optional[str]  = None
+    priority_action:       Optional[str]  = None
+    analytics:             Optional[dict] = None
+    ai_findings:           Optional[list] = None
+    image_path:            Optional[str]  = None
+    annotated_image_path:  Optional[str]  = None
+
+
+class QualityReportRequest(BaseModel):
+    inspection_id:      Optional[str] = None
+    project_name:       Optional[str] = None
+    site_location:      Optional[str] = None
+    inspector_name:     Optional[str] = None
+    client_name:        Optional[str] = None
+    project_phase:      Optional[str] = None
+    contractor:         Optional[str] = None
+    review_status:      Optional[str] = None
+    prepared_by:        Optional[str] = None
+    reviewed_by:        Optional[str] = None
+    approved_by:        Optional[str] = None
+    images:             List[ImagePayload] = []
 
 # =========================================================
 # VALIDATION
@@ -81,7 +135,7 @@ MAX_FILE_SIZE = (
 def validate_image_file(
     file: UploadFile
 ):
-
+    # Priority 1 — check extension
     extension = Path(
         file.filename
     ).suffix.lower()
@@ -94,6 +148,19 @@ def validate_image_file(
 
             detail=(
                 "Only JPG, JPEG and PNG supported."
+            )
+        )
+
+    # Priority 1 — check MIME type (guards against spoofed extensions)
+    if file.content_type not in ALLOWED_MIME_TYPES:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail=(
+                f"Unsupported image format: {file.content_type}. "
+                "Only image/jpeg and image/png are accepted."
             )
         )
 
@@ -168,6 +235,7 @@ def process_single_image(
     """
     Validates, saves, and analyzes one uploaded image.
     Returns a per-image result dict or raises HTTPException.
+    Cleans up the saved file if any processing step fails.  (Priority 7)
     """
 
     validate_image_file(file)
@@ -186,47 +254,67 @@ def process_single_image(
         UPLOAD_DIR / file_name
     )
 
-    with open(image_path, "wb") as buffer:
+    # Track whether the file was successfully written so the
+    # finally block knows whether there is anything to remove.
+    file_saved = False
 
-        shutil.copyfileobj(
-            file.file,
-            buffer
-        )
+    try:
 
-    image = cv2.imread(
-        str(image_path)
-    )
+        with open(image_path, "wb") as buffer:
 
-    if image is None:
-
-        raise HTTPException(
-
-            status_code=400,
-
-            detail=(
-                f"Image {image_index + 1} "
-                f"({file.filename}) processing failed."
+            shutil.copyfileobj(
+                file.file,
+                buffer
             )
+
+        file_saved = True
+
+        image = cv2.imread(
+            str(image_path)
         )
 
-    detections = mock_detections()
+        if image is None:
 
-    result = analyze_quality(
-        str(image_path),
-        detections
-    )
+            raise HTTPException(
 
-    if not result:
+                status_code=400,
 
-        raise HTTPException(
-
-            status_code=500,
-
-            detail=(
-                f"AI analysis failed for image "
-                f"{image_index + 1} ({file.filename})."
+                detail=(
+                    f"Image {image_index + 1} "
+                    f"({file.filename}) processing failed."
+                )
             )
+
+        detections = mock_detections()
+
+        result = analyze_quality(
+            str(image_path),
+            detections
         )
+
+        if not result:
+
+            raise HTTPException(
+
+                status_code=500,
+
+                detail=(
+                    f"AI analysis failed for image "
+                    f"{image_index + 1} ({file.filename})."
+                )
+            )
+
+    except Exception:
+
+        # Priority 7 — remove orphan file on any failure after save
+        if file_saved:
+            image_path.unlink(missing_ok=True)
+            logger.debug(
+                "Cleaned up orphan upload: %s",
+                image_path
+            )
+
+        raise
 
     # Normalise both paths to forward slashes for JSON transport.
     # _native_path() in download_report converts them back to OS
@@ -293,7 +381,7 @@ async def analyze_quality_route(
     files: List[UploadFile] = File(...)
 ):
     """
-    Accepts one or more images.
+    Accepts one or more images (max MAX_IMAGES).
     Analyzes each image independently.
     Returns image-wise findings without merging results.
     """
@@ -307,6 +395,20 @@ async def analyze_quality_route(
             detail="No images provided."
         )
 
+    # Priority 6 — enforce server-side image count limit
+    if len(files) > MAX_IMAGES:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail=(
+                f"Too many images. "
+                f"Maximum allowed per request is {MAX_IMAGES}."
+            )
+        )
+
+    # Priority 10 — timezone-aware timestamp
     inspection_id = uuid.uuid4().hex
 
     image_results = []
@@ -319,12 +421,25 @@ async def analyze_quality_route(
 
             contents = await file.read()
 
+            # Priority 5 — reject empty files
+            if not contents:
+
+                errors.append({
+                    "image_index": index + 1,
+                    "filename": file.filename,
+                    "error": "Uploaded file is empty."
+                })
+
+                continue
+
+            # Priority 2 — size check on buffered bytes
+            # (avoids holding the full stream open unnecessarily)
             if len(contents) > MAX_FILE_SIZE:
 
                 errors.append({
                     "image_index": index + 1,
                     "filename": file.filename,
-                    "error": "File exceeds 10MB limit."
+                    "error": "File exceeds 10 MB limit."
                 })
 
                 continue
@@ -348,7 +463,12 @@ async def analyze_quality_route(
 
         except Exception as e:
 
-            traceback.print_exc()
+            # Priority 3 — structured logging instead of bare traceback
+            logger.exception(
+                "Unexpected error processing image %d (%s)",
+                index + 1,
+                file.filename
+            )
 
             errors.append({
                 "image_index": index + 1,
@@ -376,8 +496,9 @@ async def analyze_quality_route(
         "inspection_id":
             inspection_id,
 
+        # Priority 10 — timezone-aware UTC timestamp
         "timestamp":
-            datetime.utcnow().isoformat(),
+            datetime.now(timezone.utc).isoformat(),
 
         "processing_engine":
             "InfraGuard Enterprise AI",
@@ -402,7 +523,7 @@ async def analyze_quality_route(
 @router.post("/report/download")
 
 async def download_report(
-    payload: dict = Body(...)
+    payload: QualityReportRequest = Body(...)       # Priority 9
 ):
 
     try:
@@ -426,23 +547,25 @@ async def download_report(
 
         image_reports = []
 
-        for img in payload.get("images", []):
+        for img in payload.images:
+
+            img_dict = img.model_dump()
 
             image_reports.append({
-                **img,
+                **img_dict,
 
                 # Schema aliases expected by pdf_service
-                "findings":          img.get("report", []),
-                "compliance_status": img.get("overall_status", "—"),
-                "risk_level":        img.get("overall_risk",   "—"),
+                "findings":          img_dict.get("report", []),
+                "compliance_status": img_dict.get("overall_status", "—"),
+                "risk_level":        img_dict.get("overall_risk",   "—"),
 
                 # Re-resolve forward-slash JSON paths → native OS paths
                 # so pdf_service can open the files without path errors.
-                "image_path":            _native_path(
-                    img.get("image_path", "")
+                "image_path":           _native_path(
+                    img_dict.get("image_path", "")
                 ),
-                "annotated_image_path":  _native_path(
-                    img.get("annotated_image_path", "")
+                "annotated_image_path": _native_path(
+                    img_dict.get("annotated_image_path", "")
                 ),
             })
 
@@ -452,29 +575,31 @@ async def download_report(
         report_version = "1.0"
 
         # --------------------------------------------------
-        # Upgrade 5: Audit timestamp
+        # Upgrade 5: Audit timestamp (Priority 10 — tz-aware)
         # --------------------------------------------------
-        audit_generated_at = datetime.utcnow().isoformat()
+        audit_generated_at = datetime.now(timezone.utc).isoformat()
+
+        payload_dict = payload.model_dump()
 
         report_data = {
-            **payload,
+            **payload_dict,
 
             # Upgrade 1: Inspection metadata
-            "project_name":     payload.get("project_name"),
-            "site_location":    payload.get("site_location"),
-            "inspector_name":   payload.get("inspector_name"),
-            "client_name":      payload.get("client_name"),
-            "project_phase":    payload.get("project_phase"),
-            "contractor":       payload.get("contractor"),
-            "review_status":    payload.get("review_status"),
+            "project_name":     payload.project_name,
+            "site_location":    payload.site_location,
+            "inspector_name":   payload.inspector_name,
+            "client_name":      payload.client_name,
+            "project_phase":    payload.project_phase,
+            "contractor":       payload.contractor,
+            "review_status":    payload.review_status,
 
             # Upgrade 2: Versioning
             "revision":         report_version,
 
             # Upgrade 3: Executive approval fields
-            "prepared_by":      payload.get("prepared_by"),
-            "reviewed_by":      payload.get("reviewed_by"),
-            "approved_by":      payload.get("approved_by"),
+            "prepared_by":      payload.prepared_by,
+            "reviewed_by":      payload.reviewed_by,
+            "approved_by":      payload.approved_by,
 
             # Upgrade 5: Audit timestamp
             "audit_generated_at": audit_generated_at,
@@ -487,13 +612,13 @@ async def download_report(
         # Uses inspection_id when available, falls back to
         # project_name + date, then the generic report_id.
         # --------------------------------------------------
-        inspection_id = payload.get("inspection_id")
-        project_name  = payload.get("project_name")
+        inspection_id = payload.inspection_id
+        project_name  = payload.project_name
 
         if inspection_id:
             pdf_name = f"InfraGuard_QA_{inspection_id}.pdf"
         elif project_name:
-            date_str = datetime.utcnow().strftime("%Y%m%d")
+            date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
             safe_name = "".join(
                 c if c.isalnum() else "_"
                 for c in project_name
@@ -529,9 +654,13 @@ async def download_report(
             media_type="application/pdf"
         )
 
+    except HTTPException:
+        raise
+
     except Exception as e:
 
-        traceback.print_exc()
+        # Priority 3 — structured logging
+        logger.exception("PDF generation failed")
 
         raise HTTPException(
 

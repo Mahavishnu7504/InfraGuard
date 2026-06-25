@@ -5,17 +5,15 @@ from reportlab.platypus import (
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch, mm
+from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus.flowables import HRFlowable
 from reportlab.graphics.shapes import Drawing, Rect, String, Line
 from reportlab.graphics import renderPDF
-from reportlab.graphics.charts.barcharts import VerticalBarChart
-from reportlab.graphics.charts.piecharts import Pie
-from reportlab.graphics.widgets.markers import makeMarker
 from reportlab.platypus import flowables
 
 from datetime import datetime
+from functools import lru_cache
 import os
 
 # =========================================================
@@ -64,6 +62,7 @@ CONTENT_W      = PAGE_W - 2 * MARGIN
 # =========================================================
 # TYPOGRAPHY
 # =========================================================
+@lru_cache(maxsize=1)
 def _styles():
     base = getSampleStyleSheet()
 
@@ -206,6 +205,10 @@ def _styles():
 # =========================================================
 def _sp(h=8):
     return Spacer(1, h)
+
+
+def _page_break(elements: list):
+    elements.append(PageBreak())
 
 
 def _sev_color(severity: str):
@@ -511,7 +514,7 @@ def _cover_page(data: dict, ST: dict, elements: list):
         "construction quality assurance review.",
         ST["footer"],
     ))
-    elements.append(PageBreak())
+    _page_break(elements)
 
 
 # =========================================================
@@ -582,7 +585,7 @@ def _table_of_contents(data: dict, ST: dict, elements: list):
         "multi-image or recurrence data only appear when applicable).",
         ST["caption"],
     ))
-    elements.append(PageBreak())
+    _page_break(elements)
 
 
 # =========================================================
@@ -1905,7 +1908,7 @@ def _responsible_team_matrix(data: dict, sec_num: int, ST: dict, elements: list)
 # EXECUTIVE SIGN-OFF PAGE  (new)
 # =========================================================
 def _executive_signoff(data: dict, ST: dict, elements: list):
-    elements.append(PageBreak())
+    _page_break(elements)
 
     # Page header bar
     hdr = Table(
@@ -2391,7 +2394,7 @@ def _appendix(data: dict, ST: dict, elements: list):
     confidence scoring. Static reference content — no dependence on
     per-report data, so it's safe to render unconditionally.
     """
-    elements.append(PageBreak())
+    _page_break(elements)
     elements.append(Paragraph("Appendix", ST["section_heading"]))
     elements.append(_sp(6))
 
@@ -2448,16 +2451,6 @@ def _appendix(data: dict, ST: dict, elements: list):
 # =========================================================
 # FOOTER CALLBACK  (Phase 3 — report_id + date + page X of Y)
 # =========================================================
-class _FooterCanvas:
-    """
-    Mixin used with multiBuild / onFirstPage / onLaterPages to inject
-    a footer containing report_id, generated_date, and page X of Y.
-    Not wired into the current single-pass doc.build() call but ready
-    to use when multiBuild is adopted.
-    """
-    pass
-
-
 def _make_footer(report_id: str, gen_date: str):
     """Return an onPage callback for use with doc.build(onFirstPage=..., onLaterPages=...)."""
     from reportlab.lib.units import inch
@@ -2601,7 +2594,7 @@ def generate_quality_pdf(report_data: dict, output_path: str) -> None:
         _detailed_issue_guidance(img, sec + 3, ST, elements)
 
         if n_images > 1 and idx < n_images - 1:
-            elements.append(PageBreak())
+            _page_break(elements)
         sec += 4
 
     # ── Audit Readiness ───────────────────────────────────

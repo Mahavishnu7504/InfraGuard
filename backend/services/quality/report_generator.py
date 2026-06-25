@@ -1,8 +1,61 @@
 from collections import Counter
 from backend.services.quality.guideline_service import get_guidelines
 from datetime import datetime
+from functools import lru_cache
 import uuid
 import random
+import logging
+
+logger = logging.getLogger(__name__)
+
+# =========================================================
+# SEVERITY NORMALISATION  (P1)
+# =========================================================
+VALID_SEVERITIES = {"critical", "high", "medium", "low"}
+
+
+def normalize_severity(severity: str) -> str:
+    s = (severity or "").lower()
+    return s if s in VALID_SEVERITIES else "medium"
+
+
+# =========================================================
+# REPORT THRESHOLDS  (P3)
+# =========================================================
+REPORT_THRESHOLDS = {
+    "A_PLUS": 95,
+    "A":      90,
+    "B":      80,
+    "C":      70,
+    "D":      50,
+    "GOOD":   85,
+    "PASS":   65,
+    "FAIL":   40,
+}
+
+# =========================================================
+# REPORT METADATA  (P5)
+# =========================================================
+REPORT_METADATA = {
+    "engine":     "InfraGuard Enterprise AI",
+    "model":      "InfraVision-X Enterprise",
+    "inspection": "Construction Quality Assurance",
+    "mode":       "Realtime Inspection Intelligence",
+}
+
+
+# =========================================================
+# NARRATIVE HELPERS  (P7, P9)
+# =========================================================
+def join_paragraphs(*parts: str) -> str:
+    """Join non-empty paragraph strings with a single space."""
+    return " ".join(p.strip() for p in parts if p)
+
+
+def utc_now() -> datetime:
+    """Central UTC timestamp helper — migrate to timezone-aware here if needed."""
+    return datetime.utcnow()
+
 
 SEVERITY_SCORE_DEDUCTIONS = {
     "critical": 25,
@@ -84,35 +137,35 @@ def compute_compliance_score(detections: list) -> int:
 
 
 def compliance_status(score: int) -> str:
-    if score >= 85:
+    if score >= REPORT_THRESHOLDS["GOOD"]:
         return "Compliant"
-    if score >= 65:
+    if score >= REPORT_THRESHOLDS["PASS"]:
         return "Conditionally Compliant"
-    if score >= 40:
+    if score >= REPORT_THRESHOLDS["FAIL"]:
         return "Non-Compliant"
     return "Critical Non-Compliance"
 
 
 def risk_level_from_score(score: int) -> str:
-    if score >= 85:
+    if score >= REPORT_THRESHOLDS["GOOD"]:
         return "Low"
-    if score >= 65:
+    if score >= REPORT_THRESHOLDS["PASS"]:
         return "Medium"
-    if score >= 40:
+    if score >= REPORT_THRESHOLDS["FAIL"]:
         return "High"
     return "Critical"
 
 
 def inspection_grade(score: int) -> str:
-    if score >= 95:
+    if score >= REPORT_THRESHOLDS["A_PLUS"]:
         return "A+"
-    if score >= 90:
+    if score >= REPORT_THRESHOLDS["A"]:
         return "A"
-    if score >= 80:
+    if score >= REPORT_THRESHOLDS["B"]:
         return "B"
-    if score >= 70:
+    if score >= REPORT_THRESHOLDS["C"]:
         return "C"
-    if score >= 50:
+    if score >= REPORT_THRESHOLDS["D"]:
         return "D"
     return "F"
 
@@ -202,10 +255,12 @@ _ZONE_CONTEXT = {
 }
 
 
+@lru_cache(maxsize=16)
 def zone_description(zone: str) -> str:
     return _ZONE_DESCRIPTIONS.get(zone, "work zone")
 
 
+@lru_cache(maxsize=16)
 def zone_context(zone: str) -> str:
     return _ZONE_CONTEXT.get(zone, "within the inspected work area")
 
@@ -333,7 +388,8 @@ def build_observation(
     """
     templates = OBSERVATION_TEMPLATES.get(issue_type)
     if templates:
-        base = random.choice(templates)
+        rng  = random.Random(issue_type)
+        base = rng.choice(templates)
     else:
         base = guideline["observation"]
     sev_key = severity.lower()
@@ -551,9 +607,7 @@ _DEFAULT_OPERATIONAL_IMPACT = {
 
 def operational_impact(issue_type: str, severity: str = "medium") -> str:
     impact_map   = _OPERATIONAL_IMPACTS.get(issue_type, _DEFAULT_OPERATIONAL_IMPACT)
-    severity_key = severity.lower()
-    if severity_key not in ("critical", "high", "medium", "low"):
-        severity_key = "medium"
+    severity_key = normalize_severity(severity)
     return impact_map.get(severity_key, impact_map.get("medium", ""))
 
 
@@ -571,10 +625,10 @@ def build_ai_metadata(confidence: float) -> dict:
         level = "Review Recommended"
     return {
         "confidence_level":  level,
-        "analysis_engine":   "InfraGuard Enterprise AI",
-        "inspection_type":   "Construction Quality Assurance",
-        "detection_model":   "InfraVision-X Enterprise",
-        "analysis_mode":     "Realtime Inspection Intelligence",
+        "analysis_engine":   REPORT_METADATA["engine"],
+        "inspection_type":   REPORT_METADATA["inspection"],
+        "detection_model":   REPORT_METADATA["model"],
+        "analysis_mode":     REPORT_METADATA["mode"],
     }
 
 
@@ -649,10 +703,7 @@ _CONDITION_CLASSIFICATION: dict = {
 
 
 def condition_classification(severity: str) -> str:
-    severity_key = severity.lower()
-    if severity_key not in _CONDITION_CLASSIFICATION:
-        severity_key = "medium"
-    return _CONDITION_CLASSIFICATION[severity_key]
+    return _CONDITION_CLASSIFICATION[normalize_severity(severity)]
 
 
 # =========================================================
@@ -667,10 +718,7 @@ _PRIORITY_LEVELS: dict = {
 
 
 def priority_level(severity: str) -> str:
-    severity_key = severity.lower()
-    if severity_key not in _PRIORITY_LEVELS:
-        severity_key = "medium"
-    return _PRIORITY_LEVELS[severity_key]
+    return _PRIORITY_LEVELS[normalize_severity(severity)]
 
 
 # =========================================================
@@ -685,10 +733,7 @@ _INSPECTION_STATUS: dict = {
 
 
 def inspection_status(severity: str) -> str:
-    severity_key = severity.lower()
-    if severity_key not in _INSPECTION_STATUS:
-        severity_key = "medium"
-    return _INSPECTION_STATUS[severity_key]
+    return _INSPECTION_STATUS[normalize_severity(severity)]
 
 
 # =========================================================
@@ -729,10 +774,7 @@ _TARGET_RESOLUTION: dict = {
 
 
 def target_resolution(severity: str) -> str:
-    severity_key = severity.lower()
-    if severity_key not in _TARGET_RESOLUTION:
-        severity_key = "medium"
-    return _TARGET_RESOLUTION[severity_key]
+    return _TARGET_RESOLUTION[normalize_severity(severity)]
 
 
 # =========================================================
@@ -785,7 +827,7 @@ def build_finding(item: dict, total_findings: int = 1) -> dict:
 
     return {
         # Identity
-        "finding_id":          f"INF-{datetime.utcnow().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+        "finding_id":          f"INF-{utc_now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
         # Core
         "issue_type":          issue_type,
         "category":            category,
@@ -1122,13 +1164,9 @@ def build_audit_exposure_summary(image_reports: list, overall_score: int) -> str
 # COMPLIANCE BENCHMARK  (frontend Phase 7)
 # =========================================================
 def compliance_benchmark(score: int) -> str:
-    """
-    Maps the overall compliance score onto a three-tier enterprise
-    benchmark label consumed by the Compliance Benchmark Panel.
-    """
-    if score >= 90:
+    if score >= REPORT_THRESHOLDS["A"]:
         return "Enterprise Grade"
-    if score >= 65:
+    if score >= REPORT_THRESHOLDS["PASS"]:
         return "Industry Acceptable"
     return "Below Standard"
 
@@ -1140,9 +1178,9 @@ def compliance_benchmark(score: int) -> str:
 def audit_status(score: int, critical_count: int) -> str:
     if critical_count > 0:
         return "Not Audit Ready"
-    if score >= 85:
+    if score >= REPORT_THRESHOLDS["GOOD"]:
         return "Audit Ready"
-    if score >= 65:
+    if score >= REPORT_THRESHOLDS["PASS"]:
         return "Conditionally Audit Ready"
     return "Not Audit Ready"
 
@@ -1209,6 +1247,7 @@ _ISSUE_DISPLAY_NAMES = {
 }
 
 
+@lru_cache(maxsize=64)
 def _display_name(issue_type: str) -> str:
     return _ISSUE_DISPLAY_NAMES.get(
         issue_type,
@@ -1477,7 +1516,7 @@ def build_site_executive_narrative(image_reports: list, overall_score: int) -> s
         "mechanisms."
     )
 
-    return f"{opening} {pattern_line} {severity_line} {closing}"
+    return join_paragraphs(opening, pattern_line, severity_line, closing)
 
 
 def build_executive_summary(
@@ -1630,7 +1669,7 @@ def build_executive_summary(
             f"attention."
         )
 
-    return " ".join(parts)
+    return join_paragraphs(*parts)
 
 
 # =========================================================
@@ -1740,12 +1779,20 @@ def generate_multi_image_report(
            pdf_service.generate_quality_pdf
     """
     if not inspection_id:
-        inspection_id = f"IG-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        inspection_id = f"IG-{utc_now().strftime('%Y%m%d%H%M%S')}"
 
     if not inspection_date:
-        inspection_date = datetime.utcnow().strftime("%d %b %Y")
+        inspection_date = utc_now().strftime("%d %b %Y")
 
     image_reports     = [build_image_report(img) for img in images_data]
+
+    logger.info(
+        "generate_multi_image_report: id=%s images=%d findings_total=%d score=%d",
+        inspection_id,
+        len(image_reports),
+        sum(r["total_findings"] for r in image_reports),
+        compute_compliance_score([d for img in images_data for d in img.get("detections", [])]),
+    )
 
     all_detections    = [d for img in images_data for d in img.get("detections", [])]
     overall_score     = compute_compliance_score(all_detections)
@@ -1790,9 +1837,9 @@ def generate_multi_image_report(
     # ── Audit readiness ───────────────────────────────────
     critical_total = overall_breakdown.get("Critical", 0)
 
-    if overall_score >= 85 and critical_total == 0:
+    if overall_score >= REPORT_THRESHOLDS["GOOD"] and critical_total == 0:
         audit_readiness = "Audit Ready"
-    elif overall_score >= 65 and critical_total == 0:
+    elif overall_score >= REPORT_THRESHOLDS["PASS"] and critical_total == 0:
         audit_readiness = "Conditionally Audit Ready — Remediation Required"
     elif critical_total > 0:
         audit_readiness = (
@@ -1825,9 +1872,9 @@ def generate_multi_image_report(
         "inspection_id":          inspection_id,
         "project_name":           project_name,
         "inspection_date":        inspection_date,
-        "generated_at":           datetime.utcnow().strftime("%d %b %Y %H:%M UTC"),
-        "inspection_type":        "Construction Quality Assurance",
-        "processing_engine":      "InfraGuard Enterprise AI",
+        "generated_at":           utc_now().strftime("%d %b %Y %H:%M UTC"),
+        "inspection_type":        REPORT_METADATA["inspection"],
+        "processing_engine":      REPORT_METADATA["engine"],
 
         # ── Report header fields ──────────────────────────
         "overall_status":         overall_status,

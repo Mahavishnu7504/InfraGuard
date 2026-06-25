@@ -1,10 +1,78 @@
+import logging
 import os
 import uuid
 from collections import Counter
 from datetime import datetime
+from enum import Enum
+from functools import lru_cache
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+# =========================================================
+# ENTERPRISE THRESHOLDS  (Priority 1)
+# =========================================================
+# Single source of truth for all score-based decisions.
+# Adjust here and every downstream function updates automatically.
+# =========================================================
+ENTERPRISE_THRESHOLDS: dict[str, int] = {
+    # Audit / readiness gates
+    "audit_ready":          90,
+    "conditional":          75,
+    "corrective":           60,
+    # Operational status gates
+    "operationally_stable": 90,
+    "conditionally_stable": 75,
+    "corrective_attention": 60,
+    # Benchmark gates
+    "enterprise_grade":     90,
+    "industry_acceptable":  75,
+    "below_standard":       60,
+    # Health rating gates
+    "excellent":            90,
+    "good":                 80,
+    "needs_improvement":    65,
+    # Grade gates
+    "grade_a_plus":         95,
+    "grade_a":              90,
+    "grade_b":              80,
+    "grade_c":              70,
+    # Risk classification gates
+    "risk_low":             85,
+    "risk_moderate":        70,
+    "risk_high":            50,
+}
+
+# =========================================================
+# SEVERITY CONSTANTS  (Priority 2)
+# =========================================================
+SEVERITY_CRITICAL = "critical"
+SEVERITY_HIGH     = "high"
+SEVERITY_MEDIUM   = "medium"
+SEVERITY_LOW      = "low"
+
+# =========================================================
+# ANALYTICS THRESHOLDS  (Priority 4)
+# =========================================================
+CONFIDENCE_ENTERPRISE = 0.85   # >= this → enterprise verified
+CONFIDENCE_MODERATE   = 0.70   # >= this → moderate confidence (else review_required)
+
+SYSTEMIC_THRESHOLD  = 7   # dominant issue count for "Systemic" recurrence
+FREQUENT_THRESHOLD  = 4   # dominant issue count for "Frequent" recurrence
+RECURRING_THRESHOLD = 2   # dominant issue count for "Recurring" recurrence
+
+# =========================================================
+# INSPECTION GRADE ENUM  (Priority 5)
+# =========================================================
+
+class InspectionGrade(str, Enum):
+    A_PLUS = "A+"
+    A      = "A"
+    B      = "B"
+    C      = "C"
+    D      = "D"
 
 from backend.services.quality.report_generator import (
     generate_report,
@@ -47,6 +115,7 @@ _ISSUE_DISPLAY_NAMES = {
 }
 
 
+@lru_cache(maxsize=64)
 def _display_name(issue_type: str) -> str:
     return _ISSUE_DISPLAY_NAMES.get(
         issue_type,
@@ -75,11 +144,11 @@ def classify_risk(score: int, severity_counts: Counter = None) -> str:
     """
 
     # Score-derived baseline
-    if score >= 85:
+    if score >= ENTERPRISE_THRESHOLDS["risk_low"]:
         base = "Low"
-    elif score >= 70:
+    elif score >= ENTERPRISE_THRESHOLDS["risk_moderate"]:
         base = "Moderate"
-    elif score >= 50:
+    elif score >= ENTERPRISE_THRESHOLDS["risk_high"]:
         base = "High"
     else:
         base = "Critical"
@@ -92,8 +161,8 @@ def classify_risk(score: int, severity_counts: Counter = None) -> str:
 
     escalated_rank = _rank[base]
 
-    critical_count = severity_counts.get("critical", 0)
-    high_count     = severity_counts.get("high",     0)
+    critical_count = severity_counts.get(SEVERITY_CRITICAL, 0)
+    high_count     = severity_counts.get(SEVERITY_HIGH,     0)
 
     if critical_count > 0:
         escalated_rank = max(escalated_rank, _rank["High"])
@@ -110,16 +179,16 @@ def classify_risk(score: int, severity_counts: Counter = None) -> str:
 # INSPECTION GRADE
 # =========================================================
 
-def inspection_grade(score: int) -> str:
-    if score >= 95:
-        return "A+"
-    if score >= 90:
-        return "A"
-    if score >= 80:
-        return "B"
-    if score >= 70:
-        return "C"
-    return "D"
+def inspection_grade(score: int) -> InspectionGrade:
+    if score >= ENTERPRISE_THRESHOLDS["grade_a_plus"]:
+        return InspectionGrade.A_PLUS
+    if score >= ENTERPRISE_THRESHOLDS["grade_a"]:
+        return InspectionGrade.A
+    if score >= ENTERPRISE_THRESHOLDS["grade_b"]:
+        return InspectionGrade.B
+    if score >= ENTERPRISE_THRESHOLDS["grade_c"]:
+        return InspectionGrade.C
+    return InspectionGrade.D
 
 
 # =========================================================
@@ -134,16 +203,16 @@ def operational_status(score: int, severity_counts: Counter = None) -> str:
     inspections that contain critical structural issues.
     """
 
-    critical_count = (severity_counts or {}).get("critical", 0)
+    critical_count = (severity_counts or {}).get(SEVERITY_CRITICAL, 0)
 
     if critical_count > 0:
         return "Critical Intervention Required"
 
-    if score >= 90:
+    if score >= ENTERPRISE_THRESHOLDS["operationally_stable"]:
         return "Operationally Stable"
-    if score >= 75:
+    if score >= ENTERPRISE_THRESHOLDS["conditionally_stable"]:
         return "Conditionally Stable"
-    if score >= 60:
+    if score >= ENTERPRISE_THRESHOLDS["corrective_attention"]:
         return "Corrective Attention Required"
     return "Critical Intervention Required"
 
@@ -194,12 +263,12 @@ def priority_action(
         preview = ", ".join(issue_names[:2])
         return f" ({preview}, and {len(issue_names) - 2} more)"
 
-    critical_count = severity_counts.get("critical", 0)
-    high_count     = severity_counts.get("high",     0)
-    medium_count   = severity_counts.get("medium",   0)
+    critical_count = severity_counts.get(SEVERITY_CRITICAL, 0)
+    high_count     = severity_counts.get(SEVERITY_HIGH,     0)
+    medium_count   = severity_counts.get(SEVERITY_MEDIUM,   0)
 
     if critical_count > 0:
-        clause = _issue_clause(_extract_issues_at_severity("critical"))
+        clause = _issue_clause(_extract_issues_at_severity(SEVERITY_CRITICAL))
         return (
             f"Immediate engineering review and executive corrective enforcement "
             f"required for {critical_count} critical finding"
@@ -207,7 +276,7 @@ def priority_action(
         )
 
     if high_count > 0:
-        clause = _issue_clause(_extract_issues_at_severity("high"))
+        clause = _issue_clause(_extract_issues_at_severity(SEVERITY_HIGH))
         return (
             f"Accelerated corrective workflows required for {high_count} "
             f"high-priority finding{'s' if high_count != 1 else ''}{clause}. "
@@ -215,7 +284,7 @@ def priority_action(
         )
 
     if medium_count > 0:
-        clause = _issue_clause(_extract_issues_at_severity("medium"))
+        clause = _issue_clause(_extract_issues_at_severity(SEVERITY_MEDIUM))
         return (
             f"Preventive maintenance and structured inspection monitoring are "
             f"recommended for {medium_count} moderate finding"
@@ -245,8 +314,8 @@ def audit_readiness(
     safety or structural risk that no numerical average can mask.
     """
 
-    critical_count = (severity_counts or {}).get("critical", 0)
-    high_count     = (severity_counts or {}).get("high",     0)
+    critical_count = (severity_counts or {}).get(SEVERITY_CRITICAL, 0)
+    high_count     = (severity_counts or {}).get(SEVERITY_HIGH,     0)
 
     if critical_count > 0:
         return (
@@ -256,10 +325,10 @@ def audit_readiness(
             f"Require Immediate Resolution"
         )
 
-    if score >= 90 and high_count == 0:
+    if score >= ENTERPRISE_THRESHOLDS["audit_ready"] and high_count == 0:
         return "Audit Ready"
 
-    if score >= 75:
+    if score >= ENTERPRISE_THRESHOLDS["conditional"]:
         if high_count > 0:
             return (
                 f"Conditionally Audit Ready — "
@@ -268,7 +337,7 @@ def audit_readiness(
             )
         return "Conditionally Audit Ready — Minor Corrective Actions Pending"
 
-    if score >= 60:
+    if score >= ENTERPRISE_THRESHOLDS["corrective"]:
         return "Moderate Compliance Gaps — Corrective Plan Required Before Audit"
 
     return "Audit Risk Detected — Significant Remediation Required"
@@ -285,18 +354,18 @@ def benchmark(score: int, severity_counts: Counter = None) -> str:
     prevents an 'Enterprise Grade' classification.
     """
 
-    critical_count = (severity_counts or {}).get("critical", 0)
+    critical_count = (severity_counts or {}).get(SEVERITY_CRITICAL, 0)
 
-    if score >= 90 and critical_count == 0:
+    if score >= ENTERPRISE_THRESHOLDS["enterprise_grade"] and critical_count == 0:
         return "Enterprise Grade"
 
-    if score >= 90 and critical_count > 0:
+    if score >= ENTERPRISE_THRESHOLDS["enterprise_grade"] and critical_count > 0:
         return "Below Enterprise Grade — Critical Findings Present"
 
-    if score >= 75:
+    if score >= ENTERPRISE_THRESHOLDS["industry_acceptable"]:
         return "Industry Acceptable"
 
-    if score >= 60:
+    if score >= ENTERPRISE_THRESHOLDS["below_standard"]:
         return "Below Recommended Standard"
 
     return "Critical Compliance Deviation"
@@ -327,7 +396,7 @@ def analytics_summary(report: list) -> dict:
 
     for item in report:
 
-        sev = item.get("severity", "medium").lower()
+        sev = item.get("severity", SEVERITY_MEDIUM).lower()
         severity_counter[sev] += 1
 
         cat = item.get("category", "General Construction Quality")
@@ -339,9 +408,9 @@ def analytics_summary(report: list) -> dict:
         conf = float(item.get("confidence", 0))
         confidence_sum += conf
 
-        if conf >= 0.85:
+        if conf >= CONFIDENCE_ENTERPRISE:
             conf_high     += 1
-        elif conf >= 0.70:
+        elif conf >= CONFIDENCE_MODERATE:
             conf_moderate += 1
         else:
             conf_low      += 1
@@ -374,15 +443,15 @@ def analytics_summary(report: list) -> dict:
         issue_cluster = "General Construction Quality"
 
     # ── Dominant severity narrative ───────────────────────
-    if severity_counter.get("critical", 0) > 0:
+    if severity_counter.get(SEVERITY_CRITICAL, 0) > 0:
         dominant_severity_narrative = (
             "Critical findings are present and require immediate attention."
         )
-    elif severity_counter.get("high", 0) > 0:
+    elif severity_counter.get(SEVERITY_HIGH, 0) > 0:
         dominant_severity_narrative = (
             "High-priority findings are driving the primary risk exposure."
         )
-    elif severity_counter.get("medium", 0) > 0:
+    elif severity_counter.get(SEVERITY_MEDIUM, 0) > 0:
         dominant_severity_narrative = (
             "Moderate findings require structured corrective follow-up."
         )
@@ -410,11 +479,11 @@ def analytics_summary(report: list) -> dict:
     }
 
     # ── Recurrence level classification ──────────────────
-    if dominant_issue_count >= 7:
+    if dominant_issue_count >= SYSTEMIC_THRESHOLD:
         recurrence_level = "Systemic"
-    elif dominant_issue_count >= 4:
+    elif dominant_issue_count >= FREQUENT_THRESHOLD:
         recurrence_level = "Frequent"
-    elif dominant_issue_count >= 2:
+    elif dominant_issue_count >= RECURRING_THRESHOLD:
         recurrence_level = "Recurring"
     else:
         recurrence_level = "Isolated"
@@ -432,18 +501,18 @@ def analytics_summary(report: list) -> dict:
 
     # ── Management attention flag ─────────────────────────
     management_attention_required = (
-        severity_counter.get("critical", 0) > 0
-        or severity_counter.get("high", 0) >= 3
+        severity_counter.get(SEVERITY_CRITICAL, 0) > 0
+        or severity_counter.get(SEVERITY_HIGH, 0) >= 3
     )
 
     return {
 
         # Standard counters
         "total_findings":           total,
-        "critical_findings":        severity_counter.get("critical", 0),
-        "high_findings":            severity_counter.get("high",     0),
-        "medium_findings":          severity_counter.get("medium",   0),
-        "low_findings":             severity_counter.get("low",      0),
+        "critical_findings":        severity_counter.get(SEVERITY_CRITICAL, 0),
+        "high_findings":            severity_counter.get(SEVERITY_HIGH,     0),
+        "medium_findings":          severity_counter.get(SEVERITY_MEDIUM,   0),
+        "low_findings":             severity_counter.get(SEVERITY_LOW,      0),
 
         # Confidence intelligence
         "average_ai_confidence":    avg_confidence,
@@ -523,9 +592,9 @@ def management_escalation_required(severity_counts: Counter) -> bool:
       - Any critical finding present
       - Three or more high-priority findings
     """
-    if severity_counts.get("critical", 0) > 0:
+    if severity_counts.get(SEVERITY_CRITICAL, 0) > 0:
         return True
-    if severity_counts.get("high", 0) >= 3:
+    if severity_counts.get(SEVERITY_HIGH, 0) >= 3:
         return True
     return False
 
@@ -545,11 +614,11 @@ def inspection_health_rating(score: int) -> str:
     >= 65  → Needs Improvement
     <  65  → Critical
     """
-    if score >= 90:
+    if score >= ENTERPRISE_THRESHOLDS["excellent"]:
         return "Excellent"
-    if score >= 80:
+    if score >= ENTERPRISE_THRESHOLDS["good"]:
         return "Good"
-    if score >= 65:
+    if score >= ENTERPRISE_THRESHOLDS["needs_improvement"]:
         return "Needs Improvement"
     return "Critical"
 
@@ -565,14 +634,17 @@ def executive_insight(analytics: dict) -> str:
 
     Prioritises the dominant issue when a pattern has been
     identified; falls back to a cluster-level statement otherwise.
+    Singular/plural is handled correctly when exactly one issue type
+    is referenced.
     """
     dominant_display = analytics.get("dominant_issue_display", "None")
     dominant_count   = analytics.get("dominant_issue_count",   0)
     issue_cluster    = analytics.get("issue_cluster",          "General Construction Quality")
 
-    if dominant_display and dominant_display != "None" and dominant_count >= 2:
+    if dominant_display and dominant_display != "None" and dominant_count >= RECURRING_THRESHOLD:
+        verb = "represents" if dominant_count == 1 else "represent"
         return (
-            f"{dominant_display} represent the dominant recurring issue "
+            f"{dominant_display} {verb} the dominant recurring issue "
             f"across the inspected site and should be prioritised for "
             f"corrective action."
         )
@@ -587,7 +659,7 @@ def executive_insight(analytics: dict) -> str:
 # SCORING ENGINE
 # =========================================================
 
-def calculate_score(report: list):
+def calculate_score(report: list) -> tuple[int, Counter]:
     """
     Compute the compliance score from a processed finding list.
 
@@ -606,7 +678,7 @@ def calculate_score(report: list):
 
     for item in report:
 
-        severity   = item.get("severity",   "medium").lower()
+        severity   = item.get("severity",   SEVERITY_MEDIUM).lower()
         confidence = float(item.get("confidence", 0.75))
         issue_type = item.get("issue_type", "unknown")
 
@@ -644,8 +716,8 @@ def executive_risk_index(
 
     risk = 100 - compliance_score
 
-    risk += severity_counts.get("critical", 0) * 10
-    risk += severity_counts.get("high", 0) * 5
+    risk += severity_counts.get(SEVERITY_CRITICAL, 0) * 10
+    risk += severity_counts.get(SEVERITY_HIGH, 0) * 5
 
     return max(0, min(100, risk))
 
@@ -868,7 +940,7 @@ def _label_for_detection(detection: dict, report_item: dict = None) -> dict:
     """
     source     = report_item if report_item else detection
     issue_type = source.get("issue_type", detection.get("issue_type", "unknown"))
-    severity   = str(source.get("severity", detection.get("severity", "medium"))).lower()
+    severity   = str(source.get("severity", detection.get("severity", SEVERITY_MEDIUM))).lower()
     confidence = float(source.get("confidence", detection.get("confidence", 0.0)))
     category   = source.get("category", detection.get("category", ""))
     return {
@@ -1219,13 +1291,14 @@ def generate_annotated_evidence_image(
 
     except Exception:
         # Annotation is best-effort; never propagate to core pipeline.
+        logger.exception("Failed to generate annotated evidence image")
         return None
 
 
 def analyze_quality(
     image,
     detections: list,
-) -> dict:
+) -> dict[str, object]:
     """
     Analyzes a single image against its detections.
     Called once per image by the route layer.

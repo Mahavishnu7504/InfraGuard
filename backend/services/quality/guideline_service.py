@@ -1,76 +1,92 @@
 # =========================================================
+# SEVERITY CONSTANTS                                  P1
+# =========================================================
+
+SEVERITY_CRITICAL = "critical"
+SEVERITY_HIGH     = "high"
+SEVERITY_MEDIUM   = "medium"
+SEVERITY_LOW      = "low"
+
+VALID_SEVERITIES = (
+    SEVERITY_CRITICAL,
+    SEVERITY_HIGH,
+    SEVERITY_MEDIUM,
+    SEVERITY_LOW,
+)
+
+# =========================================================
+# ENTERPRISE DEFAULTS                                  P2
+# =========================================================
+
+DEFAULT_RISK_CATEGORY   = "C"
+DEFAULT_DEPARTMENT      = "Site Management"
+DEFAULT_OWNER           = "Site Manager"
+DEFAULT_CLOSURE         = "30 Days"
+DEFAULT_AUDIT_PRIORITY  = "Routine Monitoring"
+
+# =========================================================
+# CONFIDENCE THRESHOLDS                               P5
+# =========================================================
+
+LOW_CONFIDENCE  = 0.55
+HIGH_CONFIDENCE = 0.75
+
+# =========================================================
+# RECURRENCE THRESHOLDS                               P6
+# =========================================================
+
+CRITICAL_PATTERN  = 10
+SYSTEMIC_PATTERN  = 5
+EMERGING_PATTERN  = 2
+
+# =========================================================
 # ENTERPRISE INTELLIGENCE LAYER
 # =========================================================
 
 RISK_CATEGORY_MAPPING = {
-    "critical": "A",
-    "high": "B",
-    "medium": "C",
-    "low": "C",
+    SEVERITY_CRITICAL: "A",
+    SEVERITY_HIGH:     "B",
+    SEVERITY_MEDIUM:   "C",
+    SEVERITY_LOW:      "C",
 }
 
-
 DEPARTMENT_MAPPING = {
-
-    "surface_crack": "Civil Engineering",
-
-    "corrosion": "Maintenance",
-
-    "water_leakage": "Civil Engineering",
-
-    "rebar_exposure": "Construction Quality",
-
-    "material_damage": "Construction Quality",
-
-    "poor_housekeeping": "Site Operations",
-
+    "surface_crack":      "Civil Engineering",
+    "corrosion":          "Maintenance",
+    "water_leakage":      "Civil Engineering",
+    "rebar_exposure":     "Construction Quality",
+    "material_damage":    "Construction Quality",
+    "poor_housekeeping":  "Site Operations",
     "ppe_non_compliance": "Safety Department",
 }
 
 DEPARTMENT_EXECUTIVE_OWNER = {
-
-    "Civil Engineering": "Engineering Manager",
-
-    "Maintenance": "Maintenance Manager",
-
+    "Civil Engineering":    "Engineering Manager",
+    "Maintenance":          "Maintenance Manager",
     "Construction Quality": "Quality Assurance Manager",
-
-    "Site Operations": "Site Operations Manager",
-
-    "Safety Department": "HSE Manager",
+    "Site Operations":      "Site Operations Manager",
+    "Safety Department":    "HSE Manager",
 }
 
 CLOSURE_TIMELINE = {
-
-    "critical": "Immediate (0-24 Hours)",
-
-    "high": "7 Days",
-
-    "medium": "30 Days",
-
-    "low": "Next Inspection Cycle",
+    SEVERITY_CRITICAL: "Immediate (0-24 Hours)",
+    SEVERITY_HIGH:     "7 Days",
+    SEVERITY_MEDIUM:   "30 Days",
+    SEVERITY_LOW:      "Next Inspection Cycle",
 }
 
 AUDIT_PRIORITY = {
-
-    "critical": "Immediate Escalation",
-
-    "high": "Management Review",
-
-    "medium": "Supervisor Review",
-
-    "low": "Routine Monitoring",
+    SEVERITY_CRITICAL: "Immediate Escalation",
+    SEVERITY_HIGH:     "Management Review",
+    SEVERITY_MEDIUM:   "Supervisor Review",
+    SEVERITY_LOW:      "Routine Monitoring",
 }
 
 AUDIT_EXPOSURE_LIBRARY = {
-
-    "critical": "High probability of major audit non-conformance.",
-
-    "high": "Potential significant audit observation.",
-
-    "medium": "Moderate audit exposure requiring corrective action.",
-
-    "low": "Limited audit exposure.",
+    SEVERITY_CRITICAL: "High probability of major audit non-conformance.",
+    SEVERITY_HIGH:     "Potential significant audit observation.",
+    SEVERITY_MEDIUM:   "Moderate audit exposure requiring corrective action.",
+    SEVERITY_LOW:      "Limited audit exposure.",
 }
 
 CONSEQUENCE_LIBRARY = {
@@ -216,7 +232,7 @@ GUIDELINES = {
 
         "root_cause": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Root cause analysis indicates probable structural "
                 "overloading beyond original design parameters, typically "
                 "compounded by inadequate curing practices and cumulative "
@@ -224,21 +240,21 @@ GUIDELINES = {
                 "affected structural member."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Contributing root causes likely include sustained thermal "
                 "movement (expansion and contraction cycling) interacting "
                 "with insufficiently cured concrete, accelerating crack "
                 "propagation under operational loading."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "The primary contributing factor is typically improper "
                 "curing during the early concrete hydration period, "
                 "exacerbated by thermal movement arising from environmental "
                 "temperature fluctuations."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Improper curing practices during the initial concrete "
                 "placement and hydration period are the most probable root "
                 "cause, resulting in early-stage shrinkage-related surface "
@@ -248,26 +264,26 @@ GUIDELINES = {
 
         "risk": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Severe crack propagation presents an immediate structural "
                 "failure risk. Load-bearing capacity may be critically "
                 "compromised, posing direct safety hazards to personnel "
                 "and surrounding infrastructure."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Significant crack progression may accelerate structural "
                 "deterioration and reduce load-bearing performance if "
                 "corrective action is not taken promptly."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Moderate crack activity may reduce long-term structural "
                 "durability and increase maintenance requirements if "
                 "left unmonitored under environmental or operational loading."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor surface cracking presents limited immediate risk "
                 "but should be monitored to prevent progression under "
                 "sustained loading or environmental exposure."
@@ -276,7 +292,7 @@ GUIDELINES = {
 
         "corrective_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Immediately suspend structural loading operations in the "
                 "affected zone. Commission an emergency structural engineering "
                 "assessment and apply interim stabilisation measures. Formal "
@@ -284,21 +300,21 @@ GUIDELINES = {
                 "any operations in the affected area."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Initiate accelerated structural assessment within 48 hours. "
                 "Conduct crack mapping, measure width and progression rate, "
                 "and apply appropriate sealant treatment. Restrict operational "
                 "loading in affected zones pending engineering review."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Schedule a detailed crack inspection within 30 days. Document "
                 "crack dimensions, orientation, and progression rate. Apply "
                 "corrective sealant treatment based on engineering evaluation "
                 "findings."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Record crack location and visual characteristics during the "
                 "next scheduled inspection cycle. Apply preventive sealant "
                 "treatment if crack width exceeds 0.1 mm."
@@ -307,26 +323,26 @@ GUIDELINES = {
 
         "preventive_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Implement continuous structural monitoring with defined load "
                 "restriction protocols. Establish regular engineer-supervised "
                 "inspection intervals and maintain detailed crack progression "
                 "records."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Establish a structured crack monitoring programme with defined "
                 "inspection intervals. Implement load management controls and "
                 "environmental exposure mitigation measures."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Conduct periodic structural inspections and maintain crack "
                 "progression records. Monitor environmental conditions that may "
                 "accelerate surface degradation between inspection cycles."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Include crack monitoring in routine inspection procedures. "
                 "Maintain environmental exposure records and apply preventive "
                 "protective coatings as conditions warrant."
@@ -357,26 +373,26 @@ GUIDELINES = {
 
         "root_cause": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Root cause analysis points to long-term coating failure that "
                 "has permitted sustained moisture ingress into the substrate, "
                 "allowing oxidation to progress unchecked to a critical "
                 "material loss stage."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Protective coating failure combined with persistent moisture "
                 "ingress is the likely root cause, allowing corrosion to "
                 "progress significantly before detection."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Moisture ingress through compromised or aging protective "
                 "coatings is the probable root cause driving continued "
                 "corrosion activity."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Early-stage moisture ingress, likely due to minor coating "
                 "degradation, is the most probable root cause of the observed "
                 "corrosion indicators."
@@ -385,25 +401,25 @@ GUIDELINES = {
 
         "risk": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Advanced corrosion may have critically reduced material "
                 "cross-section and load-bearing capacity, presenting immediate "
                 "structural failure and personnel safety hazard risks."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Significant corrosion activity is actively weakening material "
                 "performance and may accelerate infrastructure degradation if "
                 "corrective action is delayed beyond the current operational cycle."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Progressive corrosion may reduce material durability and "
                 "operational lifespan if protective treatment is not applied "
                 "within a reasonable timeframe."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Early-stage corrosion presents limited immediate structural "
                 "risk but should be treated promptly to prevent accelerated "
                 "surface deterioration."
@@ -412,27 +428,27 @@ GUIDELINES = {
 
         "corrective_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Immediately restrict operational loading on affected components. "
                 "Commission emergency structural assessment to evaluate residual "
                 "material capacity. Replace or structurally reinforce severely "
                 "degraded sections before resuming any operational activities."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Remove corrosion deposits from affected surfaces and assess "
                 "residual material thickness within 48 hours. Apply industrial-grade "
                 "corrosion protection treatment and evaluate the need for full "
                 "component replacement."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Clean affected surfaces, assess corrosion depth and areal coverage, "
                 "and apply an appropriate protective coating system within 30 days. "
                 "Schedule a follow-up inspection to verify treatment effectiveness."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Apply preventive anti-corrosion treatment to affected areas during "
                 "the next scheduled maintenance cycle. Document the location and "
                 "extent of corrosion activity for trend monitoring."
@@ -441,25 +457,25 @@ GUIDELINES = {
 
         "preventive_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Implement continuous corrosion monitoring using defined inspection "
                 "protocols and environmental controls. Establish a mandatory "
                 "protective coating maintenance schedule with engineer sign-off."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Establish a structured corrosion inspection programme with defined "
                 "intervals. Apply protective coating systems and implement "
                 "environmental exposure controls in affected zones."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Schedule periodic corrosion inspections and maintain protective "
                 "coating condition records. Monitor humidity and environmental "
                 "exposure in high-risk areas."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Include corrosion checks in routine inspection procedures. Maintain "
                 "protective coatings and address any coating damage promptly to "
                 "prevent moisture ingress."
@@ -491,26 +507,26 @@ GUIDELINES = {
 
         "root_cause": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Root cause analysis indicates a combined failure of the "
                 "waterproofing membrane system and underlying drainage "
                 "deficiency, allowing uncontrolled water accumulation and "
                 "ingress into the structure."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Waterproofing system failure, compounded by inadequate "
                 "drainage capacity in the affected zone, is the probable root "
                 "cause of the significant moisture infiltration observed."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "A developing waterproofing failure, potentially aggravated "
                 "by drainage deficiency in the surrounding area, is the "
                 "likely root cause of the persistent leakage."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor waterproofing degradation, possibly linked to early "
                 "drainage deficiency, is the probable root cause of the "
                 "observed moisture indicators."
@@ -519,26 +535,26 @@ GUIDELINES = {
 
         "risk": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Uncontrolled water ingress presents an immediate risk of "
                 "structural damage, potential electrical hazard, and accelerated "
                 "material deterioration. Continued unaddressed exposure may lead "
                 "to rapid infrastructure failure."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Significant moisture infiltration is actively degrading structural "
                 "components and may compromise waterproofing system integrity across "
                 "a wider area if not addressed urgently."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Persistent water leakage may progressively deteriorate structural "
                 "materials, introduce mould risk, and reduce long-term infrastructure "
                 "reliability."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor moisture indicators suggest early-stage waterproofing "
                 "compromise. Monitoring and preventive treatment are recommended "
                 "to prevent escalation."
@@ -547,7 +563,7 @@ GUIDELINES = {
 
         "corrective_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Immediately isolate the affected zone and identify the primary "
                 "leakage source. Commission emergency waterproofing repair and "
                 "assess structural components for water damage. Restrict personnel "
@@ -555,20 +571,20 @@ GUIDELINES = {
                 "review."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Identify and repair the primary leakage source within 48 hours. "
                 "Restore waterproofing membrane integrity and assess structural "
                 "components for moisture-related damage. Verify drainage system "
                 "performance across the affected zone."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Identify the leakage source and schedule waterproofing repair "
                 "within 30 days. Apply interim waterproofing treatment to prevent "
                 "further ingress and monitor affected areas for moisture progression."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Inspect waterproofing joints and drainage channels for minor "
                 "defects during the next maintenance cycle. Apply targeted sealant "
                 "treatment and monitor affected areas at subsequent inspections."
@@ -577,25 +593,25 @@ GUIDELINES = {
 
         "preventive_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Implement continuous moisture monitoring in the affected zone. "
                 "Establish mandatory waterproofing inspection schedules and drainage "
                 "system maintenance protocols with defined response thresholds."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Establish a structured waterproofing inspection programme. Inspect "
                 "drainage systems at defined intervals and maintain records of "
                 "moisture-prone areas across the site."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Conduct periodic waterproofing condition assessments and drainage "
                 "inspections. Monitor high-risk zones during and after wet weather "
                 "conditions."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Include waterproofing condition checks in routine inspection "
                 "procedures. Maintain drainage clearance and inspect sealant "
                 "integrity at regular intervals."
@@ -627,28 +643,28 @@ GUIDELINES = {
 
         "root_cause": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Root cause analysis indicates a critical loss of concrete "
                 "cover, likely resulting from incorrect spacer or chair "
                 "placement during construction, compounded by long-term "
                 "carbonation-driven cover deterioration."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Insufficient concrete cover depth at the time of placement, "
                 "combined with progressive carbonation of the surrounding "
                 "concrete, is the probable root cause of the significant "
                 "reinforcement exposure."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Inadequate reinforcement positioning or insufficient cover "
                 "depth during construction is the likely root cause, with "
                 "concrete surface deterioration over time exposing the "
                 "embedded steel."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor cover deficiency, potentially arising from formwork "
                 "displacement or spacer misplacement during placement, is "
                 "the probable root cause of the localised exposure."
@@ -657,26 +673,26 @@ GUIDELINES = {
 
         "risk": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Severely exposed reinforcement is actively corroding, critically "
                 "undermining structural integrity and load transfer capacity. "
                 "Immediate load restriction and engineering intervention are "
                 "required to prevent structural failure."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Significant rebar exposure is accelerating corrosion propagation "
                 "and reducing both structural capacity and long-term concrete "
                 "durability across the affected zone."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Partial reinforcement exposure may allow progressive corrosion "
                 "and reduce the structural protection provided by the concrete "
                 "cover if left unaddressed."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor concrete cover deficiency presents limited immediate risk "
                 "but should be addressed to prevent moisture-driven corrosion "
                 "over the service life of the structure."
@@ -685,7 +701,7 @@ GUIDELINES = {
 
         "corrective_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Immediately restrict structural loading in the affected area. "
                 "Commission emergency structural assessment to evaluate "
                 "reinforcement condition and residual load capacity. Apply "
@@ -693,20 +709,20 @@ GUIDELINES = {
                 "code-compliant depth before resuming operations."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Apply corrosion inhibitor treatment to exposed reinforcement "
                 "and restore concrete cover to the required protective depth "
                 "within 14 days. Assess the extent of corrosion penetration "
                 "and associated structural impact."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Schedule concrete repair within 30 days. Clean exposed rebar, "
                 "apply anti-corrosion primer, and restore concrete cover using "
                 "appropriate repair mortar to the specified minimum depth."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Apply preventive concrete sealant to vulnerable areas during the "
                 "next maintenance cycle. Document exposure location and extent "
                 "for monitoring at subsequent inspections."
@@ -715,26 +731,26 @@ GUIDELINES = {
 
         "preventive_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Implement continuous structural monitoring in the affected zone. "
                 "Establish mandatory reinforcement cover inspection protocols and "
                 "enforce cover depth verification at each stage of future concrete "
                 "placement operations."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Establish a structured rebar cover inspection programme. Implement "
                 "cover depth verification controls and concrete quality checks "
                 "during all future concrete placement operations."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Conduct periodic concrete cover assessments and maintain inspection "
                 "records. Monitor exposed areas for corrosion progression during "
                 "routine inspection cycles."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Include rebar cover checks in routine inspection procedures. "
                 "Verify concrete cover depth compliance during future construction "
                 "quality control operations."
@@ -766,27 +782,27 @@ GUIDELINES = {
 
         "root_cause": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Root cause analysis suggests severe mechanical impact or "
                 "operational overload exceeding material design tolerances, "
                 "potentially compounded by pre-existing material quality "
                 "deficiencies."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Repeated mechanical stress or impact loading beyond the "
                 "material's design tolerance, combined with possible material "
                 "quality variance, is the likely root cause of the significant "
                 "deterioration."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Moderate mechanical or environmental stress acting on "
                 "materials with possible underlying quality or handling "
                 "deficiencies is the probable root cause."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor incidental impact or handling-related stress is the "
                 "most probable root cause of the observed surface damage."
             ),
@@ -794,25 +810,25 @@ GUIDELINES = {
 
         "risk": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Severe material damage may have critically compromised structural "
                 "or operational integrity, posing immediate safety risks and "
                 "requiring urgent engineering assessment before continued use."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Significant material deterioration is reducing infrastructure "
                 "performance and may accelerate further degradation if corrective "
                 "action is not initiated within the current operational period."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Moderate material damage may negatively affect operational "
                 "reliability and increase long-term maintenance requirements "
                 "if not addressed within a reasonable timeframe."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor material surface damage presents limited operational impact "
                 "but should be repaired to prevent progression under environmental "
                 "or mechanical loading."
@@ -821,27 +837,27 @@ GUIDELINES = {
 
         "corrective_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Immediately restrict operational use of the affected area. "
                 "Commission engineering assessment to determine the extent of damage "
                 "and structural implications. Replace or reinforce critically damaged "
                 "materials under qualified supervision before resuming operations."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Assess the full extent of material damage and initiate accelerated "
                 "repair or replacement procedures within 14 days. Engineering "
                 "validation is required before resuming full operational loading "
                 "in the affected zone."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Schedule detailed inspection and repair of damaged materials within "
                 "30 days. Apply appropriate repair procedures based on material "
                 "type and damage extent as assessed by qualified personnel."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Address surface damage during the next scheduled maintenance cycle. "
                 "Document damage location and extent and apply appropriate protective "
                 "treatment to prevent further deterioration."
@@ -850,26 +866,26 @@ GUIDELINES = {
 
         "preventive_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Implement enhanced material integrity monitoring and operational "
                 "load management controls. Review material specifications and "
                 "handling procedures to identify and eliminate root causes of "
                 "recurring damage."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Establish periodic material integrity inspections with defined "
                 "acceptance criteria. Review handling and operational procedures "
                 "to minimise future damage risk."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Conduct regular material condition assessments and maintain "
                 "damage records. Implement controlled handling procedures for "
                 "materials identified as vulnerable."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Include material condition checks in routine inspection procedures. "
                 "Apply protective coatings or surface treatments to minimise "
                 "environmental damage exposure."
@@ -900,26 +916,26 @@ GUIDELINES = {
 
         "root_cause": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Root cause analysis points to a systemic breakdown in site "
                 "supervision and waste management protocols, reflecting an "
                 "absence of enforced housekeeping standards across the site."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Inadequate supervisory enforcement of housekeeping standards, "
                 "combined with insufficient designated storage and disposal "
                 "arrangements, is the probable root cause of the significant "
                 "deficiencies observed."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Inconsistent enforcement of housekeeping procedures and "
                 "unclear designation of storage and disposal areas are the "
                 "likely root causes of the moderate shortfalls identified."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor lapses in routine housekeeping discipline, likely due "
                 "to momentary oversight rather than systemic failure, are the "
                 "probable root cause."
@@ -928,25 +944,25 @@ GUIDELINES = {
 
         "risk": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Severely disorganised worksite conditions are creating immediate "
                 "safety hazards including trip, fall, and fire risks, indicating "
                 "a significant breakdown in site management and safety controls."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Significant housekeeping deficiencies are elevating worker injury "
                 "risk and may indicate broader failures in operational discipline "
                 "and safety management."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Moderate housekeeping shortfalls are creating unnecessary "
                 "operational hazards and reducing site efficiency and compliance "
                 "standards."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Minor housekeeping issues were identified. Prompt attention will "
                 "prevent escalation and maintain operational compliance standards."
             ),
@@ -954,7 +970,7 @@ GUIDELINES = {
 
         "corrective_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Immediately halt non-essential operations and clear all identified "
                 "safety hazards. Conduct an emergency site safety review and "
                 "implement mandatory housekeeping enforcement before work resumes. "
@@ -962,20 +978,20 @@ GUIDELINES = {
                 "are required."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Clear debris, reorganise all work zones, and restore safe "
                 "operational pathways within 24 hours. Conduct a formal safety "
                 "briefing with all site personnel and implement immediate "
                 "housekeeping enforcement."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Organise and clear affected work areas within 48 hours. Designate "
                 "material storage zones and restore safe access pathways. Reinforce "
                 "housekeeping expectations with all site personnel."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Address housekeeping deficiencies during the current or next "
                 "work shift. Remind site personnel of housekeeping requirements "
                 "and the location of designated storage and disposal areas."
@@ -984,25 +1000,25 @@ GUIDELINES = {
 
         "preventive_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Implement mandatory daily housekeeping audits with defined "
                 "accountability. Establish clear housekeeping standards and "
                 "formal disciplinary procedures for persistent non-compliance."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Establish structured daily housekeeping checks and assign clear "
                 "supervisory responsibility for site cleanliness. Implement "
                 "workforce awareness training for housekeeping compliance."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Conduct regular housekeeping inspections at defined intervals. "
                 "Display housekeeping standards in prominent locations and "
                 "reinforce expectations through scheduled toolbox talks."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Include housekeeping checks in daily site inspections. Maintain "
                 "clearly marked material storage and waste disposal areas "
                 "throughout the site."
@@ -1035,25 +1051,25 @@ GUIDELINES = {
 
         "root_cause": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Root cause analysis indicates a systemic failure in safety "
                 "culture and supervisory enforcement, reflecting inadequate "
                 "accountability structures for PPE compliance across the site."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Insufficient supervisory enforcement and inadequate worker "
                 "safety awareness are the probable root causes of the "
                 "significant non-compliance observed."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Inconsistent supervisory enforcement of PPE requirements, "
                 "potentially combined with gaps in worker safety awareness, "
                 "is the likely root cause."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "An isolated lapse in individual compliance, rather than a "
                 "systemic enforcement gap, is the probable root cause of the "
                 "identified non-compliance."
@@ -1062,24 +1078,24 @@ GUIDELINES = {
 
         "risk": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Multiple or repeated PPE non-compliance events indicate a "
                 "systemic safety culture failure. Worker injury risk is critically "
                 "elevated and regulatory enforcement penalties are likely to apply."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Significant PPE non-compliance is creating serious worker injury "
                 "exposure and indicates inadequate safety enforcement and supervision "
                 "within the affected work zone."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "PPE non-compliance in the affected area is elevating worker injury "
                 "risk and may compromise the site's overall safety compliance record."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Isolated PPE non-compliance was identified. Prompt corrective "
                 "instruction will prevent escalation and maintain the site's "
                 "safety compliance standards."
@@ -1088,7 +1104,7 @@ GUIDELINES = {
 
         "corrective_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Immediately suspend work in the affected zone. Conduct an emergency "
                 "safety inspection and brief all workers on mandatory PPE requirements "
                 "before work resumes. Report all non-compliance incidents formally to "
@@ -1096,20 +1112,20 @@ GUIDELINES = {
                 "as required."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Issue immediate safety instruction to all non-compliant workers and "
                 "remove them from work activities until compliant PPE is confirmed. "
                 "Conduct a formal safety briefing with all site personnel within "
                 "24 hours."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Issue direct corrective instruction to workers identified without "
                 "required PPE. Conduct a team safety reminder and verify PPE "
                 "availability and adequacy across the affected work zone."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Provide immediate PPE instruction to the identified individual. "
                 "Verify PPE availability, condition, and suitability for the "
                 "specific work being performed."
@@ -1118,26 +1134,26 @@ GUIDELINES = {
 
         "preventive_action": {
 
-            "critical": (
+            SEVERITY_CRITICAL: (
                 "Implement continuous PPE compliance monitoring through supervisory "
                 "checks and site surveillance. Establish formal disciplinary "
                 "procedures for repeat non-compliance and conduct regular safety "
                 "culture assessments."
             ),
 
-            "high": (
+            SEVERITY_HIGH: (
                 "Establish mandatory PPE compliance checks at site entry points and "
                 "work zone boundaries. Implement supervisor accountability for PPE "
                 "enforcement within their areas of responsibility."
             ),
 
-            "medium": (
+            SEVERITY_MEDIUM: (
                 "Conduct regular PPE compliance audits and include compliance results "
                 "in site safety reporting. Implement PPE awareness training as part "
                 "of site induction and refresher procedures."
             ),
 
-            "low": (
+            SEVERITY_LOW: (
                 "Include PPE compliance in daily site inspection checklists. Ensure "
                 "adequate PPE supplies are accessible at site entry points and "
                 "across all active work zones."
@@ -1170,26 +1186,26 @@ DEFAULT_GUIDELINE = {
 
     "root_cause": {
 
-        "critical": (
+        SEVERITY_CRITICAL: (
             "Root cause analysis indicates a critical underlying deficiency "
             "in construction quality control or engineering compliance that "
             "requires detailed investigation to confirm the precise "
             "contributing factors."
         ),
 
-        "high": (
+        SEVERITY_HIGH: (
             "A significant underlying quality or process deficiency is the "
             "probable root cause and should be confirmed through detailed "
             "engineering investigation."
         ),
 
-        "medium": (
+        SEVERITY_MEDIUM: (
             "A moderate underlying quality or procedural deficiency is the "
             "likely root cause and should be evaluated during detailed "
             "inspection."
         ),
 
-        "low": (
+        SEVERITY_LOW: (
             "A minor underlying deficiency, likely procedural or "
             "environmental in nature, is the probable root cause and should "
             "be confirmed during routine inspection."
@@ -1198,22 +1214,22 @@ DEFAULT_GUIDELINE = {
 
     "risk": {
 
-        "critical": (
+        SEVERITY_CRITICAL: (
             "This critical deviation presents an immediate risk to operational "
             "safety and infrastructure integrity requiring urgent intervention."
         ),
 
-        "high": (
+        SEVERITY_HIGH: (
             "This high-severity deviation requires prompt corrective action to "
             "prevent further operational or structural impact."
         ),
 
-        "medium": (
+        SEVERITY_MEDIUM: (
             "This moderate deviation may affect operational reliability and "
             "compliance standards if not addressed within a reasonable timeframe."
         ),
 
-        "low": (
+        SEVERITY_LOW: (
             "This low-risk observation presents limited immediate impact but "
             "should be monitored and addressed during routine maintenance."
         ),
@@ -1221,25 +1237,25 @@ DEFAULT_GUIDELINE = {
 
     "corrective_action": {
 
-        "critical": (
+        SEVERITY_CRITICAL: (
             "Immediately restrict operations in the affected zone and commission "
             "emergency engineering review. Do not resume normal operations until "
             "written engineering clearance is obtained."
         ),
 
-        "high": (
+        SEVERITY_HIGH: (
             "Initiate accelerated corrective action within 48 hours. Engage "
             "qualified engineering personnel to assess and remediate the "
             "identified condition."
         ),
 
-        "medium": (
+        SEVERITY_MEDIUM: (
             "Schedule corrective inspection and repair within 30 days. Apply "
             "appropriate engineering procedures based on detailed assessment "
             "findings."
         ),
 
-        "low": (
+        SEVERITY_LOW: (
             "Address the identified condition during the next scheduled "
             "maintenance cycle. Document observations for ongoing monitoring."
         ),
@@ -1247,24 +1263,24 @@ DEFAULT_GUIDELINE = {
 
     "preventive_action": {
 
-        "critical": (
+        SEVERITY_CRITICAL: (
             "Implement continuous monitoring and enhanced inspection protocols "
             "in the affected zone. Review and strengthen quality management "
             "procedures to prevent recurrence."
         ),
 
-        "high": (
+        SEVERITY_HIGH: (
             "Establish a structured inspection programme with defined corrective "
             "action thresholds. Review operational procedures to minimise "
             "recurrence risk."
         ),
 
-        "medium": (
+        SEVERITY_MEDIUM: (
             "Continue preventive monitoring and include the identified condition "
             "in the scope of routine inspection procedures."
         ),
 
-        "low": (
+        SEVERITY_LOW: (
             "Maintain standard inspection procedures and monitor the identified "
             "condition during regular inspection cycles."
         ),
@@ -1283,27 +1299,42 @@ DEFAULT_GUIDELINE = {
 
 
 # =========================================================
-# RESOLUTION HELPER
+# LOGGING                                              P9
 # =========================================================
 
-def _resolve_field(value, severity_key):
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+# =========================================================
+# RESOLUTION HELPERS
+# =========================================================
+
+def _resolve_field(value: object, severity_key: str) -> str:
     """
     If a field is a severity-stratified dict, return the
-    tier matching severity_key.  Falls back to 'medium'
-    then to the first available tier, then to empty string.
+    tier matching severity_key.  Falls back through a
+    preferred order then to the first available tier.
     Flat string fields are returned as-is.
     """
     if not isinstance(value, dict):
         return value
 
-    return (
-        value.get(severity_key)
-        or value.get("medium")
-        or next(iter(value.values()), "")
+    preferred_order = (
+        severity_key,
+        SEVERITY_MEDIUM,
+        SEVERITY_LOW,
     )
 
+    for key in preferred_order:
+        if key in value:
+            return value[key]
 
-def _resolve_confidence_note(confidence):
+    return next(iter(value.values()), "")
+
+
+def _resolve_confidence_note(confidence: float) -> str:
     """
     Translate an AI detection confidence score into a
     human-readable note for reporting.
@@ -1319,13 +1350,13 @@ def _resolve_confidence_note(confidence):
             "Manual verification recommended."
         )
 
-    if confidence < 0.55:
+    if confidence < LOW_CONFIDENCE:
         return (
             "AI confidence is moderate. "
             "Manual verification recommended."
         )
 
-    if confidence < 0.75:
+    if confidence < HIGH_CONFIDENCE:
         return (
             "AI confidence is good. "
             "Visual verification advised."
@@ -1334,7 +1365,7 @@ def _resolve_confidence_note(confidence):
     return "AI confidence is high."
 
 
-def recurrence_classification(count):
+def recurrence_classification(count: int) -> str:
     """
     Classify how many times an issue type has recurred (e.g. across
     a site's inspection history) into a human-readable pattern label.
@@ -1348,18 +1379,18 @@ def recurrence_classification(count):
     -------
     str
         One of:
-        "Critical Recurring Pattern"   (count >= 10)
-        "Systemic Recurring Pattern"   (5 <= count < 10)
-        "Emerging Recurring Pattern"   (2 <= count < 5)
-        "Isolated Occurrence"          (count < 2)
+        "Critical Recurring Pattern"   (count >= CRITICAL_PATTERN)
+        "Systemic Recurring Pattern"   (count >= SYSTEMIC_PATTERN)
+        "Emerging Recurring Pattern"   (count >= EMERGING_PATTERN)
+        "Isolated Occurrence"          (count < EMERGING_PATTERN)
     """
-    if count >= 10:
+    if count >= CRITICAL_PATTERN:
         return "Critical Recurring Pattern"
 
-    if count >= 5:
+    if count >= SYSTEMIC_PATTERN:
         return "Systemic Recurring Pattern"
 
-    if count >= 2:
+    if count >= EMERGING_PATTERN:
         return "Emerging Recurring Pattern"
 
     return "Isolated Occurrence"
@@ -1369,11 +1400,15 @@ def recurrence_classification(count):
 # PUBLIC ACCESS
 # =========================================================
 
+from functools import lru_cache  # noqa: E402  (stdlib; import near use is fine)
+
+
+@lru_cache(maxsize=128)
 def get_guidelines(
-    issue_type,
-    severity="medium",
-    confidence=0.0,
-):
+    issue_type: str,
+    severity: str = SEVERITY_MEDIUM,
+    confidence: float = 0.0,
+) -> dict:
     """
     Return a flat guideline dict resolved for the given
     issue type, severity tier, and confidence level.
@@ -1385,8 +1420,7 @@ def get_guidelines(
     severity : str
         One of 'critical' | 'high' | 'medium' | 'low'.
     confidence : float
-        AI detection confidence in [0, 1].  Reserved for
-        future confidence-driven text modulation.
+        AI detection confidence in [0, 1].
 
     Returns
     -------
@@ -1399,11 +1433,17 @@ def get_guidelines(
         executive_recommendation, executive_owner, confidence_note
     """
 
-    template    = GUIDELINES.get(issue_type, DEFAULT_GUIDELINE)
+    if issue_type not in GUIDELINES:
+        logger.warning(
+            "Unknown issue_type %r — falling back to DEFAULT_GUIDELINE.",
+            issue_type,
+        )
+
+    template     = GUIDELINES.get(issue_type, DEFAULT_GUIDELINE)
     severity_key = severity.lower()
 
-    if severity_key not in ("critical", "high", "medium", "low"):
-        severity_key = "medium"
+    if severity_key not in VALID_SEVERITIES:
+        severity_key = SEVERITY_MEDIUM
 
     return {
         "observation":       _resolve_field(template.get("observation",       DEFAULT_GUIDELINE["observation"]),       severity_key),
@@ -1417,7 +1457,7 @@ def get_guidelines(
             DEFAULT_GUIDELINE["guideline_reference"],
         ),
 
-        # ---- Enterprise Intelligence Layer additions ----
+        # ---- Enterprise Intelligence Layer ----
         "potential_consequences": CONSEQUENCE_LIBRARY.get(issue_type, []),
 
         "management_impact": MANAGEMENT_IMPACT_LIBRARY.get(
@@ -1427,28 +1467,28 @@ def get_guidelines(
 
         "risk_category": RISK_CATEGORY_MAPPING.get(
             severity_key,
-            "C",
+            DEFAULT_RISK_CATEGORY,
         ),
 
-        # ---- Upgrade additions (department / timeline / audit / confidence) ----
+        # ---- Department / Timeline / Audit / Confidence ----
         "department": DEPARTMENT_MAPPING.get(
             issue_type,
-            "Site Management",
+            DEFAULT_DEPARTMENT,
         ),
 
         "target_closure_date": CLOSURE_TIMELINE.get(
             severity_key,
-            "30 Days",
+            DEFAULT_CLOSURE,
         ),
 
         "audit_priority": AUDIT_PRIORITY.get(
             severity_key,
-            "Routine Monitoring",
+            DEFAULT_AUDIT_PRIORITY,
         ),
 
         "audit_exposure": AUDIT_EXPOSURE_LIBRARY.get(
             severity_key,
-            AUDIT_EXPOSURE_LIBRARY["medium"],
+            AUDIT_EXPOSURE_LIBRARY[SEVERITY_MEDIUM],
         ),
 
         "executive_recommendation": EXECUTIVE_RECOMMENDATIONS.get(
@@ -1458,10 +1498,8 @@ def get_guidelines(
 
         "executive_owner": DEPARTMENT_EXECUTIVE_OWNER.get(
             DEPARTMENT_MAPPING.get(issue_type),
-            "Site Manager",
+            DEFAULT_OWNER,
         ),
 
         "confidence_note": _resolve_confidence_note(confidence),
-
-        
     }
