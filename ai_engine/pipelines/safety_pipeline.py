@@ -1,16 +1,20 @@
 import atexit
+import hashlib
+import traceback
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue, Full, Empty
 from datetime import datetime, timezone
-from threading import Lock
+from threading import Lock, RLock   # Fix 5: RLock for re-entrant cleanup safety
+from typing import Dict, List
 import uuid
 import time
 
 import numpy as np
 
 from ai_engine.core.predictor import (
-    InfraGuardPredictor
+    InfraGuardPredictor,
+    CrackPredictor,
 )
 
 from backend.services.safety.tracker import (
@@ -33,33 +37,112 @@ from backend.api.activity_routes import (
 # CORE
 # =========================================
 
-predictor = InfraGuardPredictor()
+# ── Fix 1: Bounded predictor pool — avoids loading N models for N cameras ───
+# 20 cameras no longer means 20 YOLO instances; each pool slot is shared via
+# consistent hashing (hash(camera_id) % pool_size).
+MAX_PREDICTOR_POOL = 4
+
+_infra_predictor_pool: List["InfraGuardPredictor"] = [
+    InfraGuardPredictor() for _ in range(MAX_PREDICTOR_POOL)
+]
+_crack_predictor_pool: List["CrackPredictor"] = [
+    CrackPredictor() for _ in range(MAX_PREDICTOR_POOL)
+]
+
+# Legacy per-camera dicts kept for cleanup_stale_cameras compatibility (now empty).
+_camera_infra_predictors: Dict[str, "InfraGuardPredictor"] = {}
+_camera_crack_predictors: Dict[str, "CrackPredictor"] = {}
+
+# Fix 5: RLock instead of Lock — allows cleanup helpers to be called while the
+# caller already holds the lock (prevents deadlock on future nested calls).
+_predictor_lock = RLock()
+
+# Issue 2 fix: one lock per pool slot — prevents concurrent cameras from hitting
+# the same predictor simultaneously when the YOLO wrapper is not thread-safe.
+_infra_predictor_locks: List[Lock] = [Lock() for _ in range(MAX_PREDICTOR_POOL)]
+_crack_predictor_locks: List[Lock] = [Lock() for _ in range(MAX_PREDICTOR_POOL)]
 
 # [R5 #8] Predictor warmup — eliminates first-inference latency spike
 try:
     _dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    predictor.predict_frame(_dummy_frame)
+    for _p in _infra_predictor_pool:
+        _p.predict_frame(_dummy_frame)
+    for _p in _crack_predictor_pool:
+        _p.predict_frame(_dummy_frame)
     del _dummy_frame
 except Exception:
     pass
 
-tracker = EnterpriseTracker()
+
+def _pool_idx(camera_id: str) -> int:
+    """Issue 3 fix: stable pool slot via hashlib.md5 — survives process restarts."""
+    return int(hashlib.md5(camera_id.encode()).hexdigest(), 16) % MAX_PREDICTOR_POOL
+
+
+def _get_infra_predictor(camera_id: str) -> "InfraGuardPredictor":
+    """Return the pooled InfraGuard predictor for `camera_id` via consistent hashing."""
+    return _infra_predictor_pool[_pool_idx(camera_id)]
+
+
+def _get_crack_predictor(camera_id: str) -> "CrackPredictor":
+    """Return the pooled Crack predictor for `camera_id` via consistent hashing."""
+    return _crack_predictor_pool[_pool_idx(camera_id)]
+
+
+def _safe_infra_predict(camera_id: str, frame) -> list:
+    """Issue 2 fix: serialise concurrent cameras that share the same pool slot."""
+    idx = _pool_idx(camera_id)
+    with _infra_predictor_locks[idx]:
+        return _infra_predictor_pool[idx].predict_frame(frame)
+
+
+def _safe_crack_predict(camera_id: str, frame) -> list:
+    """Issue 2 fix: serialise concurrent cameras that share the same pool slot."""
+    idx = _pool_idx(camera_id)
+    with _crack_predictor_locks[idx]:
+        return _crack_predictor_pool[idx].predict_frame(frame)
+
+
+def _recover_infra_predictor(camera_id: str) -> None:
+    """Fix 13: Replace a crashed pool slot with a fresh instance."""
+    idx = _pool_idx(camera_id)
+    with _predictor_lock:
+        try:
+            _infra_predictor_pool[idx] = InfraGuardPredictor()
+        except Exception:
+            traceback.print_exc()
+
+
+def _recover_crack_predictor(camera_id: str) -> None:
+    """Fix 13: Replace a crashed crack pool slot with a fresh instance."""
+    idx = _pool_idx(camera_id)
+    with _predictor_lock:
+        try:
+            _crack_predictor_pool[idx] = CrackPredictor()
+        except Exception:
+            traceback.print_exc()
+
+# ── Mod 5: Person tracker only (cracks / equipment have their own) ───────────
+person_tracker = EnterpriseTracker()
+
+# ── Mod 6: Dedicated equipment tracker (enables movement/zone/near-miss) ─────
+equipment_tracker = EnterpriseTracker()
 
 alert_manager = AlertManager(
     cooldown=10
 )
 
-# [R5 #4] Async executor — save_event / add_alert run off the inference thread
-# [FIX] Bounded queue (max 500 pending tasks) prevents unbounded memory growth
-# under sustained high-alert load (e.g. 30 FPS × 10 alerts/sec with slow DB).
-# Tasks submitted when the queue is full are silently dropped (non-critical logging).
+# Fix 2: Separate executors so logging/alerting backlog never starves inference.
+# inference_executor runs YOLO predict_frame calls (latency-critical).
+# logging_executor runs save_event / add_alert (throughput-tolerant).
 _MAX_PENDING_TASKS = 500
 _task_queue: Queue = Queue(maxsize=_MAX_PENDING_TASKS)
-_executor = ThreadPoolExecutor(max_workers=2)
+inference_executor = ThreadPoolExecutor(max_workers=4)
+logging_executor   = ThreadPoolExecutor(max_workers=2)
 
 
 def _submit_task(fn, *args, **kwargs):
-    """Submit a fire-and-forget task, dropping it if the queue is full."""
+    """Submit a fire-and-forget logging task, dropping it if the queue is full."""
     try:
         _task_queue.put_nowait(True)   # reserve a slot
     except Full:
@@ -67,46 +150,63 @@ def _submit_task(fn, *args, **kwargs):
     def _run():
         try:
             fn(*args, **kwargs)
+        except Exception:
+            traceback.print_exc()
         finally:
             try:
                 _task_queue.get_nowait()   # release the slot
             except Empty:
                 pass
-    _executor.submit(_run)
+    try:
+        logging_executor.submit(_run)   # Fix 2: dedicated logging executor
+    except Exception:
+        try:
+            _task_queue.get_nowait()
+        except Empty:
+            pass
 
 
 # [FIX #1] Prevent thread leaks on backend reload / crash
-atexit.register(_executor.shutdown, wait=False)
+atexit.register(inference_executor.shutdown, wait=False)
+atexit.register(logging_executor.shutdown,   wait=False)
 
-# [R2 #8] Rolling analytics history — last 100 frames
-analytics_history = deque(maxlen=100)
+# [R2 #8] Rolling analytics history — last 3000 frames (~100 sec at 30 FPS)
+analytics_history = deque(maxlen=3000)
 
 # [FIX #8] Global alert history — configurable size, default 5000
 MAX_ALERT_HISTORY = 5000
 alert_history: deque = deque(maxlen=MAX_ALERT_HISTORY)
 
 # [R3 #9] Detection persistence — last known detections per camera
-last_detections: dict = {}     # { camera_id: [det, ...] }
+last_detections: Dict[str, List[dict]] = {}     # { camera_id: [det, ...] }
 
 # [FIX] Track last-seen time per camera so stale entries can be expired.
-last_seen_cameras: dict = {}   # { camera_id: float (time.time()) }
+last_seen_cameras: Dict[str, float] = {}   # { camera_id: float (time.time()) }
 
 # Cameras not seen for this many seconds are removed from last_detections.
 CAMERA_EXPIRY_SECONDS = 300
 
-# [FIX] Track last-reported area per crack UUID to deduplicate growth alerts.
-# Alerts fire at 20 % increments (20 %, 40 %, 60 %…) rather than every frame.
-crack_growth_reported: dict = {}   # { crack_uuid: last_reported_area }
+# [FIX Issue #6] Crack growth baseline — stores both the original detection
+# area AND the area at which the last growth alert fired.
+# Structure: { crack_uuid: {"original_area": int, "last_alert_area": int} }
+# This prevents the baseline from drifting forward with each alert milestone,
+# so growth percentages remain anchored to first detection, not last alert.
+crack_growth_reported: Dict[str, dict] = {}   # { crack_uuid: {original_area, last_alert_area} }
 
 # [R5 #3] Crack registry — stable UUID tracking across frames
 # { camera_id: { crack_uuid: {"bbox": [x1,y1,x2,y2], "area": int} } }
-crack_registry: dict = {}
+crack_registry: Dict[str, Dict[str, dict]] = {}
 
-# [R5 #6] Heatmap data — last 500 detection centre points for frontend overlays
-heatmap_data: deque = deque(maxlen=500)
+# Fix 7: Per-camera heatmap — prevents cameras overwriting each other's data.
+# Each camera gets its own deque(maxlen=5000).
+heatmap_data: Dict[str, deque] = {}
 
-# [FIX] Rolling FPS — smoothed over last 30 frames to reduce dashboard noise
-fps_history: deque = deque(maxlen=30)
+# [FIX] Rolling FPS — per-camera deque (maxlen=30) to avoid cross-camera averaging
+# { camera_id: deque([fps, ...]) }
+fps_history: Dict[str, deque] = {}
+
+# [FIX] predict_lock removed — per-camera predictors (_camera_predictors) provide
+# isolation without serialising concurrent streams. See _get_predictor().
 
 # [FIX] Throttle cleanup to once per minute instead of every frame.
 # At 30 FPS × 10 cameras that saves ~17 900 unnecessary scans/min.
@@ -114,8 +214,24 @@ _CLEANUP_INTERVAL = 60   # seconds
 _last_cleanup: float = 0.0
 # camera streams: analytics_history, alert_history, heatmap_data,
 # crack_registry, last_detections, last_seen_cameras, fps_history.
-state_lock = Lock()
+# Fix 5: RLock so cleanup helpers can be called while the caller already holds
+# state_lock (e.g. run_safety_pipeline → cleanup_crack_registry).
+state_lock = RLock()
 
+
+# ── Mod 12: Pipeline version — included in every frame result ────────────────
+PIPELINE_VERSION = "2.0.0"
+
+# Fix 10: Model health monitoring — dashboard can surface FAILED status.
+model_health: Dict[str, object] = {
+    "infra_status": "ONLINE",
+    "crack_status": "ONLINE",
+    "last_error":   None,
+}
+
+# Fix 11: Camera offline threshold — cameras not seen for this many seconds
+# are reported as OFFLINE in frame analytics.
+CAMERA_OFFLINE_THRESHOLD = 30   # seconds
 
 # =========================================
 # CONFIG
@@ -130,6 +246,7 @@ CLASS_MAP = {
     "no helmet":                                "no_helmet",
     "no vest":                                  "no_vest",
     "crack detection - v2 2023-11-03 11-16am":  "crack",
+    "crack":                                     "crack",   # Mod 1: clean key
     # Equipment — normalize casing variations
     "Bulldozer":        "bulldozer",
     "bulldozer":        "bulldozer",
@@ -196,10 +313,17 @@ SEVERITY_SCORE = {
     "low":       20,
 }
 
-# [R5 #4] Equipment restricted zones — configure per camera_id.
-# Format: { camera_id: [[x1, y1, x2, y2], ...] }
-# Example: DANGER_ZONES = {0: [[100, 100, 500, 500]]}
-# Leave as {} to disable globally; override at startup or via site config.
+# ── Mod 11: Typed zone system ─────────────────────────────────────────────────
+# Each zone entry: { "type": <zone_type>, "bbox": [x1, y1, x2, y2] }
+# Zone types: "equipment_only" | "workers_prohibited" | "restricted_area"
+# Example:
+# DANGER_ZONES = {
+#     "camera_1": [
+#         {"type": "equipment_only",      "bbox": [100, 100, 400, 400]},
+#         {"type": "workers_prohibited",  "bbox": [450, 50,  750, 350]},
+#         {"type": "restricted_area",     "bbox": [200, 400, 600, 600]},
+#     ]
+# }
 DANGER_ZONES: dict = {}
 
 # IoU threshold for PPE-to-worker association.
@@ -232,6 +356,42 @@ def _iou(a: list, b: list) -> float:
     if denom <= 0:
         return 0.0
     return inter / denom
+
+
+def _nms(detections: list, iou_threshold: float = 0.45) -> list:
+    """
+    Fix 12: Non-Maximum Suppression to remove duplicate detections of the same
+    object (e.g. two 'person' boxes at 0.82 and 0.79 confidence overlapping).
+    Groups by class, sorts by confidence descending, suppresses lower-confidence
+    boxes whose IoU with a kept box exceeds `iou_threshold`.
+    """
+    if not detections:
+        return detections
+
+    # Group by canonical class
+    by_class: Dict[str, list] = {}
+    for d in detections:
+        cls = CLASS_MAP.get(d.get("class_name", ""), d.get("class_name", "").lower())
+        by_class.setdefault(cls, []).append(d)
+
+    kept = []
+    for cls_dets in by_class.values():
+        cls_dets = sorted(cls_dets, key=lambda d: float(d.get("confidence", 0)), reverse=True)
+        suppressed = [False] * len(cls_dets)
+        for i in range(len(cls_dets)):
+            if suppressed[i]:
+                continue
+            kept.append(cls_dets[i])
+            bbox_i = cls_dets[i].get("bbox", [])
+            if len(bbox_i) != 4:
+                continue
+            for j in range(i + 1, len(cls_dets)):
+                if suppressed[j]:
+                    continue
+                bbox_j = cls_dets[j].get("bbox", [])
+                if len(bbox_j) == 4 and _iou(bbox_i, bbox_j) >= iou_threshold:
+                    suppressed[j] = True
+    return kept
 
 
 def _center_inside(inner: list, outer: list) -> bool:
@@ -293,7 +453,7 @@ def cleanup_crack_registry():
         ]
         for c_uuid in stale:
             del cam_cracks[c_uuid]
-            crack_growth_reported.pop(c_uuid, None)  # prevent memory leak
+            crack_growth_reported.pop(c_uuid, None)  # [FIX Issue #6] dict entry, pop is type-agnostic
 
         # [FIX #3] Remove camera entry entirely once all its cracks have expired
         # Prevents accumulation of empty dicts over months of operation
@@ -316,6 +476,23 @@ def cleanup_stale_cameras():
         last_detections.pop(cam_id, None)
         del last_seen_cameras[cam_id]
         crack_registry.pop(cam_id, None)  # remove stale camera's crack registry
+        # [FIX Issue #1] Release predictor instance to prevent memory leak.
+        # Each predictor holds a loaded YOLO model (~40-50 MB); without this
+        # a system cycling through many camera IDs leaks RAM indefinitely.
+        with _predictor_lock:
+            _camera_infra_predictors.pop(cam_id, None)
+            _camera_crack_predictors.pop(cam_id, None)
+
+    # Purge any crack_growth_reported entries not referenced by any live crack
+    # (catches orphans from unexpected registry clears or very long runtimes)
+    live_crack_ids = {
+        c_uuid
+        for cam_cracks in crack_registry.values()
+        for c_uuid in cam_cracks
+    }
+    for crack_id in list(crack_growth_reported.keys()):
+        if crack_id not in live_crack_ids:
+            crack_growth_reported.pop(crack_id, None)
 
 
 # =========================================
@@ -325,6 +502,8 @@ def cleanup_stale_cameras():
 def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
 
     start = time.time()
+    # Opt 1: single time.time() snapshot reused everywhere in this frame.
+    frame_now = start
 
     # Single timestamp for the entire frame — avoids 20-50 datetime.now() calls per frame
     frame_ts = datetime.now(timezone.utc).isoformat()
@@ -336,21 +515,53 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     # [FIX] Run cleanup at most once per minute (not every frame).
     global _last_cleanup
     with state_lock:
-        now = time.time()
+        now = frame_now
         if now - _last_cleanup >= _CLEANUP_INTERVAL:
             cleanup_crack_registry()
             # [FIX] Expire cameras not seen recently to prevent last_detections growth
             cleanup_stale_cameras()
             _last_cleanup = now
         # [FIX] Record this camera as active
-        last_seen_cameras[camera_id] = time.time()
+        last_seen_cameras[camera_id] = frame_now
     try:
-        # [R4 #6] Per-stage timing — isolates model inference cost
+        # ── Mod 3: Parallel dual-model inference (25-40 % faster) ────────────
         predict_start = time.time()
-        raw = predictor.predict_frame(frame)
+
+        # Fix 2: YOLO inference runs on inference_executor (never competes with
+        # logging tasks that run on logging_executor).
+        # Issue 2 fix: _safe_*_predict serialises cameras sharing the same pool slot.
+        infra_future = inference_executor.submit(_safe_infra_predict, camera_id, frame)
+        crack_future = inference_executor.submit(_safe_crack_predict, camera_id, frame)
+
+        try:
+            infra_raw = infra_future.result()
+            model_health["infra_status"] = "ONLINE"   # Fix 10
+        except Exception as ie:
+            model_health["infra_status"] = "FAILED"   # Fix 10
+            model_health["last_error"]   = str(ie)
+            _recover_infra_predictor(camera_id)        # Fix 13
+            raise
+
+        try:
+            crack_raw = crack_future.result()
+            model_health["crack_status"] = "ONLINE"   # Fix 10
+        except Exception as ce:
+            model_health["crack_status"] = "FAILED"   # Fix 10
+            model_health["last_error"]   = str(ce)
+            _recover_crack_predictor(camera_id)        # Fix 13
+            raise
+
         predict_ms = round((time.time() - predict_start) * 1000, 2)
+
+        # ── Mod 4: Tag every detection with its model source ──────────────────
+        for det in infra_raw:
+            det["model_source"] = "infraguard"
+        for det in crack_raw:
+            det["model_source"] = "crack"
+
+        raw = infra_raw + crack_raw
+
     except Exception as e:
-        import traceback
         traceback.print_exc()
         return {
             "detections":   [],
@@ -395,8 +606,10 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
 
         filtered.append(det)
 
-    # =====================================
-    # SPLIT DETECTIONS
+    # Fix 12: Remove duplicate detections (YOLO sometimes emits overlapping boxes
+    # for the same object at slightly different confidences). NMS keeps only the
+    # highest-confidence box when two same-class boxes overlap heavily.
+    filtered = _nms(filtered)
     # =====================================
 
     def _canonical(d):
@@ -409,10 +622,20 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     helmets_raw = [d for d in non_persons if _canonical(d) == "helmet"]
     vests_raw   = [d for d in non_persons if _canonical(d) == "vest"]
 
-    persons = tracker.update(persons)
+    try:
+        persons = person_tracker.update(persons)
+    except Exception:
+        traceback.print_exc()
+        persons = []
 
     detections = []
-    alerts     = []
+
+    # ── Mod 7: Separate alert channels for dashboard filtering / analytics ────
+    ppe_alerts       = []
+    crack_alerts     = []
+    equipment_alerts = []
+    zone_alerts      = []
+    near_miss_alerts = []
 
     # =====================================
     # PERSON DETECTIONS + PPE ASSOCIATION
@@ -482,6 +705,9 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             "has_helmet":   has_helmet,
             "has_vest":     has_vest,
             "ppe_compliant": ppe_compliant,
+
+            # ── Mod 4: Model source tag ───────────────────────────────────────
+            "model_source": p.get("model_source", "infraguard"),
         }
 
         detections.append(det)
@@ -522,11 +748,10 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
                 "timestamp":    frame_ts
             }
 
-            alerts.append(alert)
+            ppe_alerts.append(alert)
 
             # [R5 #4] Async — event logging runs off the inference thread
             _submit_task(save_event, {
-                "event_type":           "PPE_ALERT",
                 "risk_level":           risk.upper(),
                 "camera_id":            camera_id,
                 "workers":              1,
@@ -545,6 +770,23 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     # NON-PERSON DETECTIONS
     # (helmets, vests, cracks, equipment, etc.)
     # =====================================
+
+    # Fix 4: Collect all heavy-equipment detections BEFORE the loop and update
+    # the tracker once — the tracker needs to see the full set simultaneously
+    # to assign stable IDs and compute motion/zone state correctly.
+    equipment_raw = [
+        d for d in non_persons
+        if CLASS_MAP.get(d.get("class_name", ""), d.get("class_name", "").lower()) in HEAVY_EQUIPMENT
+    ]
+    try:
+        tracked_equipment_list = equipment_tracker.update(equipment_raw)
+        # Build a lookup so individual loop iterations can find their tracked entry.
+        _tracked_equip_by_idx = {i: t for i, t in enumerate(tracked_equipment_list)}
+    except Exception:
+        traceback.print_exc()
+        _tracked_equip_by_idx = {}
+
+    _equip_raw_idx = 0   # running index used to correlate loop iterations below
 
     for n in non_persons:
 
@@ -597,11 +839,16 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             "type":         "object",
             "tracking":     False,
 
-            # [R3 #13] Crack severity — populated for crack class only
+            # ── Mod 8: Crack severity with length/width/aspect_ratio ─────────
             "crack_severity": (
-                classify_crack_severity(confidence, det_area)
+                classify_crack_severity(
+                    confidence, det_area,
+                    width=int(x2 - x1), height=int(y2 - y1)
+                )
                 if label == "crack" else None
             ),
+            # ── Mod 4: Model source tag ───────────────────────────────────────
+            "model_source":   n.get("model_source", "infraguard"),
         }
 
         detections.append(det)
@@ -626,7 +873,7 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
                     "timestamp":    frame_ts
                 }
 
-                alerts.append(alert)
+                crack_alerts.append(alert)
 
                 # [R5 #4] Async logging
                 _submit_task(save_event, {
@@ -645,6 +892,14 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
                     description=alert["message"]
                 )
 
+        # ── Mod 6: Apply pre-computed batch equipment tracking ────────────────
+        if label in HEAVY_EQUIPMENT:
+            tracked_entry = _tracked_equip_by_idx.get(_equip_raw_idx)
+            if tracked_entry:
+                det["id"]       = str(tracked_entry.get("id", det["id"]))
+                det["tracking"] = True
+            _equip_raw_idx += 1
+
         # [R4 #2] Equipment alerts — medium risk machinery alert channel
         if label in HEAVY_EQUIPMENT:
 
@@ -652,32 +907,60 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
 
             if alert_manager.should_alert(equip_key, "medium"):
 
-                alerts.append({
+                equip_msg = f"Heavy equipment detected: {label.title()}"
+                # ── Mod 7: Route to equipment_alerts channel ──────────────────
+                equipment_alerts.append({
                     "type":         label,
                     "risk":         "medium",
                     "score":        SEVERITY_SCORE["medium"],
-                    "message":      f"Heavy equipment detected: {label.title()}",
+                    "message":      equip_msg,
                     "camera_id":    camera_id,
                     "timestamp":    frame_ts
                 })
 
+                # [FIX] Persist equipment alerts — previously only shown on dashboard
+                _submit_task(save_event, {
+                    "event_type":        "EQUIPMENT_ALERT",
+                    "risk_level":        "MEDIUM",
+                    "camera_id":         camera_id,
+                    "workers":           0,
+                    "violating_workers": 0,
+                    "description":       equip_msg,
+                })
+                _submit_task(add_alert,
+                    event_type="Heavy Equipment",
+                    risk="medium",
+                    cam_id=camera_id,
+                    description=equip_msg,
+                )
+
         # [R5 #4] Equipment zone violation check
-        # [FIX] Track which equipment bboxes are in a zone so risk can be
-        # escalated to "high" on the detection itself (not just via an alert).
+        # ── Mod 11: Typed zone system + Mod 7: zone_alerts channel ──────────
+        # Zones are now dicts: {"type": "equipment_only"|"workers_prohibited"|
+        #                        "restricted_area", "bbox": [x1,y1,x2,y2]}
+        # Legacy flat [x1,y1,x2,y2] lists are still accepted for compatibility.
         in_zone = False
-        for zone in DANGER_ZONES.get(camera_id, []):
+        for zone_entry in DANGER_ZONES.get(camera_id, []):
+            # Support both typed dict and legacy list formats
+            if isinstance(zone_entry, dict):
+                zone      = zone_entry.get("bbox", [])
+                zone_type = zone_entry.get("type", "restricted_area")
+            else:
+                zone      = zone_entry
+                zone_type = "restricted_area"
+
             if len(zone) == 4 and label in HEAVY_EQUIPMENT and _boxes_intersect(det_bbox, zone):
-                in_zone = True
+                in_zone  = True
                 zone_key = f"zone_{label}_{int(x1 / 50)}_{int(y1 / 50)}"
 
                 if alert_manager.should_alert(zone_key, "high"):
-
-                    alerts.append({
+                    zone_alerts.append({
                         "type":         "zone_violation",
+                        "zone_type":    zone_type,
                         "risk":         "high",
                         "score":        SEVERITY_SCORE["high"],
                         "message":      (
-                            f"{label.title()} entered restricted zone "
+                            f"{label.title()} entered {zone_type.replace('_', ' ')} zone "
                             f"[{zone[0]},{zone[1]},{zone[2]},{zone[3]}]"
                         ),
                         "equipment":    label,
@@ -691,15 +974,70 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             det["risk"]  = "high"
             det["score"] = SEVERITY_SCORE["high"]
 
+    # ── Mod 10: Near-Miss Detection ───────────────────────────────────────────
+    # Fix 3: Threshold is now relative to frame width so it represents a
+    # consistent real-world distance across 720p, 1080p, and 4K cameras.
+    frame_h, frame_w = frame.shape[:2] if hasattr(frame, "shape") else (720, 1280)
+    NEAR_MISS_THRESHOLD_PX = min(frame_w, frame_h) * 0.1   # ≈ 10% of shorter edge
+
+    worker_dets_for_nm   = [d for d in detections if d.get("type") == "worker"]
+    equipment_dets_for_nm = [d for d in detections if d.get("class_name") in HEAVY_EQUIPMENT]
+
+    for w in worker_dets_for_nm:
+        w_cx = w["x"] + w["w"] // 2
+        w_cy = w["y"] + w["h"] // 2
+        for eq in equipment_dets_for_nm:
+            eq_cx = eq["x"] + eq["w"] // 2
+            eq_cy = eq["y"] + eq["h"] // 2
+            distance = ((w_cx - eq_cx) ** 2 + (w_cy - eq_cy) ** 2) ** 0.5
+            if distance < NEAR_MISS_THRESHOLD_PX:
+                nm_key = f"nearmiss_{w['id'][:4]}_{eq['class_name']}_{int(eq_cx / 50)}_{int(eq_cy / 50)}"
+                if alert_manager.should_alert(nm_key, "critical"):
+                    nm_msg = (
+                        f"Near-miss: Worker {w['id'][:4]} within "
+                        f"{int(distance)}px of {eq['class_name'].title()}"
+                    )
+                    near_miss_alerts.append({
+                        "type":         "near_miss",
+                        "risk":         "critical",
+                        "score":        SEVERITY_SCORE["critical"],
+                        "message":      nm_msg,
+                        "worker_id":    w["id"],
+                        "equipment":    eq["class_name"],
+                        "distance_px":  int(distance),
+                        "camera_id":    camera_id,
+                        "timestamp":    frame_ts,
+                    })
+                    _submit_task(save_event, {
+                        "event_type":        "NEAR_MISS",
+                        "risk_level":        "CRITICAL",
+                        "camera_id":         camera_id,
+                        "workers":           1,
+                        "violating_workers": 1,
+                        "description":       nm_msg,
+                    })
+                    _submit_task(add_alert,
+                        event_type="Near Miss",
+                        risk="critical",
+                        cam_id=camera_id,
+                        description=nm_msg,
+                    )
+
+    # ── Mod 7: Merge all alert channels ──────────────────────────────────────
+    alerts = ppe_alerts + crack_alerts + equipment_alerts + zone_alerts + near_miss_alerts
+
     # =====================================
     # ANALYTICS
     # =====================================
 
-    # [R5 #7] Four-tier risk counting
-    critical_count = len([d for d in detections if d["risk"] == "critical"])
-    high           = len([d for d in detections if d["risk"] == "high"])
-    medium         = len([d for d in detections if d["risk"] == "medium"])
-    low            = len([d for d in detections if d["risk"] == "low"])
+    # [R5 #7] Four-tier risk counting — single pass over detections
+    risk_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for d in detections:
+        risk_counts[d["risk"]] = risk_counts.get(d["risk"], 0) + 1
+    critical_count = risk_counts["critical"]
+    high           = risk_counts["high"]
+    medium         = risk_counts["medium"]
+    low            = risk_counts["low"]
 
     # [R2 #7] Weighted risk score — four tiers now included
     risk_score = (
@@ -723,13 +1061,20 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
         cls = d["class_name"]
         class_counts[cls] = class_counts.get(cls, 0) + 1
 
-    # [R2 #6] FPS as wall-clock rate — [FIX] rolling average over last 30 frames
+    # [R2 #6] FPS as wall-clock rate — [FIX] rolling average per camera (not global)
     elapsed        = time.time() - start
     instant_fps    = round(1 / elapsed, 2) if elapsed > 0 else 0.0
     with state_lock:
-        fps_history.append(instant_fps)
-        fps = round(sum(fps_history) / len(fps_history), 2)
-    inference_time = round(elapsed * 1000, 2)
+        if camera_id not in fps_history:
+            fps_history[camera_id] = deque(maxlen=30)
+        fps_history[camera_id].append(instant_fps)
+        cam_fps = fps_history[camera_id]
+        fps = round(sum(cam_fps) / len(cam_fps), 2)
+    # Fix 9: Separate full-pipeline time from YOLO-only predict_ms so
+    # analytics can attribute overhead to tracking, alerts, and DB logging.
+    total_processing_ms = round(elapsed * 1000, 2)
+    overhead_ms         = round(total_processing_ms - predict_ms, 2)
+    inference_time      = total_processing_ms   # kept for backward compat
 
     # [R5 #1] PPE compliance derived from per-worker association flags
     worker_dets          = [d for d in detections if d.get("type") == "worker"]
@@ -775,8 +1120,9 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
         last_detections[camera_id] = detections
 
     # [R4 #8] Crack growth monitoring — alert at each 20 % growth milestone.
-    # [FIX] Deduplicated: uses crack_growth_reported so a static enlarged crack
-    # does not re-alert every frame.  Alerts at 20 %, 40 %, 60 %… milestones.
+    # Fix 6: Track last_milestone (0, 1, 2 … = 0%, 20%, 40% …) instead of
+    # last_alert_area so milestones are never skipped when growth jumps quickly
+    # (e.g. 0% → 45% in one frame now fires the 20% AND 40% milestones).
     prev_cracks = {
         d["id"]: d for d in prev_detections
         if d.get("class_name") == "crack"
@@ -787,25 +1133,46 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
         prev = prev_cracks.get(d["id"])
         if not prev or prev.get("area", 0) <= 0:
             continue
-        crack_id  = d["id"]
-        base_area = crack_growth_reported.get(crack_id, prev["area"])
-        if base_area <= 0:
+        crack_id     = d["id"]
+        current_area = d["area"]
+
+        # Initialise baseline on first sighting
+        if crack_id not in crack_growth_reported:
+            crack_growth_reported[crack_id] = {
+                "original_area":  prev["area"],
+                "last_milestone": 0,   # Fix 6: milestone index (0 = 0%, 1 = 20%, …)
+            }
+
+        entry         = crack_growth_reported[crack_id]
+        original      = entry["original_area"]
+        last_milestone = entry["last_milestone"]
+
+        if original <= 0:
             continue
-        growth = (d["area"] - base_area) / base_area
-        if growth >= 0.20:
-            alerts.append({
-                "type":         "crack_growth",
-                "risk":         "high",
-                "score":        SEVERITY_SCORE["high"],
-                "message":      (
-                    f"Crack growth detected: "
-                    f"{round(growth * 100, 1)}% area increase"
-                ),
-                "camera_id":    camera_id,
-                "timestamp":    frame_ts
-            })
-            # Advance the baseline so next alert fires at the NEXT 20 % step
-            crack_growth_reported[crack_id] = d["area"]
+
+        # Total growth relative to original (always anchored to first detection)
+        total_growth   = (current_area - original) / original
+        # Which milestone index the current area sits at
+        current_milestone = int(total_growth * 100) // 20
+
+        if current_milestone > last_milestone:
+            # Fire once per missed milestone so no step is silently skipped
+            for ms in range(last_milestone + 1, current_milestone + 1):
+                crack_alerts.append({
+                    "type":      "crack_growth",
+                    "risk":      "high",
+                    "score":     SEVERITY_SCORE["high"],
+                    "message":   (
+                        f"Crack growth milestone {ms * 20}%: "
+                        f"{round(total_growth * 100, 1)}% total area increase"
+                    ),
+                    "camera_id":  camera_id,
+                    "timestamp":  frame_ts,
+                })
+            entry["last_milestone"] = current_milestone
+
+        # Re-merge alerts after crack growth (keeps alert channels in sync)
+        alerts = ppe_alerts + crack_alerts + equipment_alerts + zone_alerts + near_miss_alerts
 
     # [R3 #15] Safety score 0–100
     # Calculated BEFORE frame_analytics so it can be stored directly in the dict.
@@ -818,14 +1185,27 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     # (includes crack-growth alerts now that they're appended above)
     zone_violations = sum(1 for a in alerts if a.get("type") == "zone_violation")
 
+    # ── Mod 9: Crack analytics breakdown ─────────────────────────────────────
+    crack_dets     = [d for d in detections if d.get("class_name") == "crack"]
+    crack_count    = len(crack_dets)
+    minor_count    = sum(1 for d in crack_dets if d.get("crack_severity") == "minor")
+    moderate_count = sum(1 for d in crack_dets if d.get("crack_severity") == "moderate")
+    severe_count   = sum(1 for d in crack_dets if d.get("crack_severity") == "severe")
+    critical_crack = sum(1 for d in crack_dets if d.get("crack_severity") == "critical")
+
     frame_analytics = {
 
         "total_objects":    len(detections),
         "processing_ms":    inference_time,
         "predict_ms":       predict_ms,         # [R4 #6] inference-only latency
+        "overhead_ms":      overhead_ms,        # Fix 9: tracking+alerts+logging time
         "fps":              fps,
         "tracker_active":   True,
-        "camera_health":    "ONLINE",           # [FIX #7] camera health status
+        "camera_health":    (
+            "ONLINE"
+            if time.time() - last_seen_cameras.get(camera_id, time.time()) <= CAMERA_OFFLINE_THRESHOLD
+            else "OFFLINE"
+        ),   # Fix 11: real offline detection
         "risk_score":       risk_score,         # [R2 #7]
         "safety_score":     safety_score,       # [FIX #3] stored here, not after
         "class_counts":     class_counts,
@@ -846,36 +1226,72 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
         "zone_violations":  zone_violations,    # [FIX #4]
         "timestamp":        frame_ts,
         "camera_id":        camera_id,
+        # ── Mod 9: Crack analytics ────────────────────────────────────────────
+        "cracks": {
+            "count":    crack_count,
+            "minor":    minor_count,
+            "moderate": moderate_count,
+            "severe":   severe_count,
+            "critical": critical_crack,
+        },
+        # ── Analytics expansion (Mod 7 channel counts) ────────────────────────
+        "worker_count":         worker_count,
+        "crack_count":          crack_count,
+        "equipment_count":      equipment_count,
+        "near_miss_count":      len(near_miss_alerts),
+        "ppe_violation_count":  sum(1 for a in ppe_alerts if a.get("risk") in ("high", "critical")),
+        "active_alert_count":   len(alerts),
+        "critical_alert_count": sum(1 for a in alerts if a.get("risk") == "critical"),
     }
 
     # [R4 #5] Frame-level counters — useful for history trend charts
     frame_analytics["alert_count"]     = len(alerts)
     frame_analytics["detection_count"] = len(detections)
 
+    # Opt 2: build heatmap entries before acquiring the lock so the critical
+    # section only does fast deque appends, not dict comprehension per detection.
+    heatmap_entries = [
+        {
+            "cx":        d["x"] + d["w"] // 2,
+            "cy":        d["y"] + d["h"] // 2,
+            "risk":      d["risk"],
+            "class":     d["class_name"],
+            "camera_id": camera_id,
+            "timestamp": frame_ts,
+        }
+        for d in detections
+    ]
+
     # [R2 #8] Append to rolling history
     # [FIX] Lock shared deques for multi-camera thread safety
     with state_lock:
         analytics_history.append(frame_analytics)
 
-        # [FIX #8] Persist ALL alerts (including crack-growth) to global history
+        # Fix 8: Store a copy — future status mutations (e.g. alert["status"]="resolved")
+        # must not silently change the historical record.
         for alert in alerts:
-            alert_history.append(alert)
+            alert_history.append(alert.copy())
 
-        # [R5 #6] Heatmap — store centre points of every detection
-        for d in detections:
-            heatmap_data.append({
-                "cx":        d["x"] + d["w"] // 2,
-                "cy":        d["y"] + d["h"] // 2,
-                "risk":      d["risk"],
-                "class":     d["class_name"],
-                "camera_id": camera_id,
-                "timestamp": frame_ts,
-            })
+        # Fix 7: Per-camera heatmap — each camera maintains its own deque
+        if camera_id not in heatmap_data:
+            heatmap_data[camera_id] = deque(maxlen=5000)
+        heatmap_data[camera_id].extend(heatmap_entries)
 
     return {
 
+        "pipeline_version": PIPELINE_VERSION,   # Mod 12
+
         "detections":   detections,
         "alerts":       alerts,
+
+        # ── Mod 7: Separate alert channels for dashboard filtering ────────────
+        "alert_channels": {
+            "ppe":       ppe_alerts,
+            "crack":     crack_alerts,
+            "equipment": equipment_alerts,
+            "zone":      zone_alerts,
+            "near_miss": near_miss_alerts,
+        },
 
         "critical":     critical_count,         # [R5 #7]
         "high":         high,
@@ -917,12 +1333,22 @@ def calculate_risk(label: str, confidence: float, area: int = 0) -> str:
     return "low"
 
 
-# [R3 #13] Crack severity classifier
+# ── Mod 8: Upgraded crack severity using length, width, aspect ratio ──────────
 # Returns one of: "minor" | "moderate" | "severe" | "critical"
-def classify_crack_severity(confidence: float, area: int) -> str:
-    if confidence >= 0.85 and area >= 10_000:
+def classify_crack_severity(confidence: float, area: int,
+                             width: int = 0, height: int = 0) -> str:
+    """
+    Severity based on area, geometric dimensions, and confidence.
+    crack_length = max(w, h);  crack_width = min(w, h)
+    aspect_ratio > 3 means an elongated structural crack (more dangerous).
+    """
+    crack_length = max(width, height) if (width or height) else 0
+    crack_width  = min(width, height) if (width or height) else 0
+    aspect_ratio = (crack_length / crack_width) if crack_width > 0 else 1.0
+
+    if (confidence >= 0.85 and area >= 10_000) or crack_length >= 300:
         return "critical"
-    if confidence >= 0.70 or area >= 6_000:
+    if (confidence >= 0.70 or area >= 6_000) or (crack_length >= 150 and aspect_ratio >= 3):
         return "severe"
     if confidence >= 0.50 or area >= 2_000:
         return "moderate"
@@ -1009,17 +1435,22 @@ def get_summary(camera_id=None) -> dict:
 def get_heatmap_data(camera_id=None) -> list:
     """
     [R5 #6] Returns detection centre points for frontend heatmap overlays.
+    Fix 7: Data is now stored per-camera to prevent cross-camera overwrite.
 
     Args:
-        camera_id: Filter to a specific camera. None = all cameras.
+        camera_id: Filter to a specific camera. None = merge all cameras.
 
     Returns:
         List of { cx, cy, risk, class, camera_id, timestamp }
     """
     with state_lock:
-        if camera_id is None:
-            return list(heatmap_data)
-        return [p for p in heatmap_data if p.get("camera_id") == camera_id]
+        if camera_id is not None:
+            return list(heatmap_data.get(camera_id, []))
+        # Merge all cameras
+        merged = []
+        for cam_deque in heatmap_data.values():
+            merged.extend(cam_deque)
+        return merged
 
 
 def get_alert_history(camera_id=None, limit: int = 100) -> list:

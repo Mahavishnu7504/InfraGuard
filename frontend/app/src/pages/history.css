@@ -127,6 +127,11 @@
     font-family: var(--mono);
     font-size: 0.65rem;
     letter-spacing: 0.1em;
+    transition: border-color 0.25s ease;
+}
+
+.hp__status:hover {
+    border-color: rgba(0, 255, 157, 0.28);
 }
 
 .pdot {
@@ -190,6 +195,7 @@
 .hp__kpi:hover {
     transform: translateY(-4px);
     border-color: rgba(0, 200, 255, 0.18);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
 }
 
 .hp__kpi-icon {
@@ -239,6 +245,15 @@
     background: var(--bg1);
     border: 1px solid var(--border);
     color: var(--tx2);
+    transition:
+        border-color 0.2s ease,
+        box-shadow 0.2s ease;
+}
+
+.hp__search:focus-within,
+.hp__filter:focus-within {
+    border-color: var(--border-hi);
+    box-shadow: 0 0 0 2px rgba(0, 200, 255, 0.12);
 }
 
 .hp__search {
@@ -256,6 +271,10 @@
     font-size: 0.74rem;
     letter-spacing: 0.04em;
     width: 100%;
+}
+
+.hp__search input::placeholder {
+    color: var(--tx2);
 }
 
 .hp__filter select {
@@ -283,12 +302,18 @@
     background: var(--bg1);
     border: 1px solid var(--border);
     border-left: 3px solid var(--ic, var(--tx3));
-    transition: transform 0.22s ease, background 0.18s ease, border-color 0.22s ease;
+    transition:
+        transform 0.22s ease,
+        background 0.18s ease,
+        border-color 0.22s ease,
+        box-shadow 0.22s ease;
 }
 
 .hp__item:hover {
     transform: translateX(5px);
     background: rgba(255, 255, 255, 0.02);
+    border-color: rgba(0, 200, 255, 0.18);
+    box-shadow: 0 16px 35px rgba(0, 0, 0, 0.30);
 }
 
 .hp__item--high {
@@ -372,6 +397,7 @@
     display: flex;
     align-items: center;
     gap: 7px;
+    flex-wrap: wrap;
     font-family: var(--mono);
     font-size: 0.58rem;
     color: var(--tx2);
@@ -458,5 +484,34 @@
         width: 100%;
         align-items: flex-start;
         text-align: left;
+    }
+}
+
+@media (max-width:480px) {
+    .hp {
+        padding: 18px;
+    }
+
+    .hp__kpi {
+        padding: 18px;
+    }
+
+    .hp__empty {
+        padding: 32px 18px;
+    }
+
+    .hp__h1 {
+        font-size: 2rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    .hp *,
+    .hp *::before,
+    .hp *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
     }
 }

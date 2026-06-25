@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   FaShieldAlt, FaExclamationTriangle, FaBroadcastTower,
@@ -16,6 +16,8 @@ function PDot({ color = "#00ff9d" }) {
 const INC_CLS = { HIGH: "an__incident--high", MEDIUM: "an__incident--medium", LOW: "an__incident--low" };
 const incCls = (r) => INC_CLS[(r || "LOW").toUpperCase()] || INC_CLS.LOW;
 
+const REFRESH_INTERVAL = 15000;
+
 export default function AnalyticsDashboard() {
   const [summary, setSummary] = useState(null);
   const [alerts, setAlerts] = useState([]);
@@ -25,14 +27,16 @@ export default function AnalyticsDashboard() {
   /* ── load ───────────────────────────────────────────── */
   useEffect(() => {
     loadAnalytics();
-    const iv = setInterval(loadAnalytics, 15000);
+    const iv = setInterval(loadAnalytics, REFRESH_INTERVAL);
     return () => clearInterval(iv);
   }, []);
 
   const loadAnalytics = async () => {
     try {
-      const analytics = await getAnalyticsSummary();
-      const feed = await getAlerts();
+      const [analytics, feed] = await Promise.all([
+        getAnalyticsSummary(),
+        getAlerts(),
+      ]);
       setSummary(analytics);
       setAlerts(feed || []);
       setError(null);
@@ -44,15 +48,38 @@ export default function AnalyticsDashboard() {
     }
   };
 
+  const handleRetry = () => {
+    setLoading(true);
+    setError(null);
+    loadAnalytics();
+  };
+
   /* ── KPI (now sourced from /activity/analytics/summary) ── */
-  const kpis = [
+  const kpis = useMemo(() => [
     { icon: <FaShieldAlt />, title: "Safety Score", value: `${summary?.safety_score ?? "--"}%` },
     { icon: <FaExclamationTriangle />, title: "Total Alerts", value: summary?.total ?? "--" },
     { icon: <FaExclamationTriangle />, title: "High Risk Alerts", value: summary?.high ?? "--" },
     { icon: <FaBroadcastTower />, title: "Active Connections", value: summary?.active_connections ?? "--" },
     { icon: <FaChartLine />, title: "Events Sent", value: summary?.events_sent ?? "--" },
     { icon: <FaServer />, title: "System Status", value: summary?.system_status?.toUpperCase() ?? "UNKNOWN" },
-  ];
+  ], [summary]);
+
+  if (loading) {
+    return (
+      <PageLayout>
+        <div className="an">
+          <motion.div className="an__hdr" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <div>
+              <div className="an__eyebrow"><PDot /> ENTERPRISE ANALYTICS</div>
+              <h1 className="an__h1">Operational<span className="an__accent"> Intelligence</span></h1>
+              <p className="an__sub">Realtime AI operational intelligence</p>
+            </div>
+          </motion.div>
+          <div className="an__loading">Loading Analytics...</div>
+        </div>
+      </PageLayout>
+    );
+  }
 
   return (
     <PageLayout>
@@ -75,19 +102,21 @@ export default function AnalyticsDashboard() {
           </div>
         </motion.div>
 
-        {/* LOADING / ERROR */}
-        {loading && (
-          <div className="an__loading">Loading Analytics...</div>
-        )}
-        {!loading && error && (
-          <div className="an__error">{error}</div>
+        {/* ERROR */}
+        {error && (
+          <div className="an__error">
+            <span>{error}</span>
+            <button type="button" className="an__retry-btn" onClick={handleRetry}>
+              Retry
+            </button>
+          </div>
         )}
 
         {/* KPI */}
         <div className="an__kpi">
           {kpis.map((item, i) => (
             <motion.div
-              key={i}
+              key={item.title}
               className="an__kpi-card"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -106,7 +135,9 @@ export default function AnalyticsDashboard() {
         {/* RISK DISTRIBUTION */}
         {summary?.total === 0 ? (
           <div className="an__empty-state">
-            No safety events detected yet. System operating normally.
+            <PDot />
+            <div>No Active Safety Events</div>
+            <small>All monitored construction zones are operating normally.</small>
           </div>
         ) : (
           <div className="an__risk-dist">
@@ -133,8 +164,8 @@ export default function AnalyticsDashboard() {
             <div className="an__panel-title"><FaBolt /> Live Incident Feed</div>
             <div className="an__feed">
               {alerts.length > 0
-                ? alerts.slice(0, 8).map((item, i) => (
-                  <div key={i} className={`an__incident ${incCls(item.risk_level)}`}>
+                ? alerts.slice(0, 8).map((item) => (
+                  <div key={item.id ?? `${item.timestamp}-${item.event_type}`} className={`an__incident ${incCls(item.risk_level)}`}>
                     <div className="an__incident-left">
                       <div className="an__incident-dot" />
                       <div>
@@ -175,8 +206,8 @@ export default function AnalyticsDashboard() {
                 { icon: <FaChartLine />, label: "Processing", val: "LIVE" },
                 { icon: <FaServer />, label: "AI Engine", val: "ACTIVE" },
                 { icon: <FaBroadcastTower />, label: "Monitoring", val: "STABLE" },
-              ].map((t, i) => (
-                <div key={i} className="an__telem-cell">
+              ].map((t) => (
+                <div key={t.label} className="an__telem-cell">
                   {t.icon}
                   <div className="an__telem-label">{t.label}</div>
                   <div className="an__telem-val">{t.val}</div>

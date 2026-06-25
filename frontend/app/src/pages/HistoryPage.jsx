@@ -17,17 +17,22 @@ function PDot() {
 const ITEM_CLS = { HIGH: "hp__item--high", MEDIUM: "hp__item--medium", LOW: "hp__item--low" };
 const itemCls = (r) => ITEM_CLS[(r || "LOW").toUpperCase()] || ITEM_CLS.LOW;
 
+// Backend sends timestamps with their own timezone info already included
+// (e.g. "Wed, 24 Jun 2026 06:34:22 GMT" or a full ISO string with offset/Z).
+// Date() parses both correctly on its own — don't append "Z" manually,
+// since that would corrupt formats that already specify a timezone.
 function formatDate(timestamp) {
-    const ts = new Date(timestamp + "Z");
+    const ts = new Date(timestamp);
     return ts.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function formatTime(timestamp) {
-    const ts = new Date(timestamp + "Z");
+    const ts = new Date(timestamp);
     return ts.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 const TODAY = new Date().toDateString();
+const REFRESH_INTERVAL = 30000;
 
 export default function HistoryPage() {
     const [search, setSearch] = useState("");
@@ -50,6 +55,7 @@ export default function HistoryPage() {
                     setLastRefresh(new Date());
                 }
             } catch (err) {
+                console.error("[HISTORY ERROR]", err);
                 if (!cancelled) setError("Unable to load incident history. Check your connection and try again.");
             } finally {
                 if (!cancelled) setLoading(false);
@@ -57,7 +63,7 @@ export default function HistoryPage() {
         }
 
         loadHistory();
-        const iv = setInterval(loadHistory, 30000);
+        const iv = setInterval(loadHistory, REFRESH_INTERVAL);
 
         return () => {
             cancelled = true;
@@ -72,13 +78,13 @@ export default function HistoryPage() {
             if (x.risk_level === "HIGH") high++;
             else if (x.risk_level === "MEDIUM") medium++;
             else low++;
-            if (new Date(x.timestamp + "Z").toDateString() === TODAY) today++;
+            if (new Date(x.timestamp).toDateString() === TODAY) today++;
         }
         return { high, medium, low, today, total: incidents.length };
     }, [incidents]);
 
     const filteredData = useMemo(() => {
-        const query = search.toLowerCase();
+        const query = search.trim().toLowerCase();
         return incidents.filter(item => {
             const matchesSearch =
                 item.event_type?.toLowerCase().includes(query) ||
@@ -110,7 +116,7 @@ export default function HistoryPage() {
                         <div className="hp__status"><FaShieldAlt /> AI VERIFIED</div>
                         {lastRefresh && (
                             <div className="hp__refresh-note">
-                                <PDot /> Auto-refresh every 30s · Last: {formatTime(lastRefresh.toISOString().replace("Z", ""))}
+                                <PDot /> Auto-refresh every {REFRESH_INTERVAL / 1000}s · Last: {formatTime(lastRefresh)}
                             </div>
                         )}
                     </div>
@@ -123,7 +129,7 @@ export default function HistoryPage() {
                         { icon: <FaShieldAlt />, label: "High Risk Events", val: counts.high },
                         { icon: <FaClock />, label: "Today's Events", val: counts.today },
                     ].map((k, i) => (
-                        <motion.div key={i} className="hp__kpi"
+                        <motion.div key={k.label} className="hp__kpi"
                             initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: i * 0.07 }}
                         >
@@ -143,7 +149,7 @@ export default function HistoryPage() {
                         { icon: <FaShieldAlt />, label: "Medium", val: counts.medium, mod: "hp__kpi--medium" },
                         { icon: <FaCheckCircle />, label: "Low", val: counts.low, mod: "hp__kpi--low" },
                     ].map((k, i) => (
-                        <motion.div key={i} className={`hp__kpi ${k.mod}`}
+                        <motion.div key={k.label} className={`hp__kpi ${k.mod}`}
                             initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: 0.21 + i * 0.07 }}
                         >
@@ -185,7 +191,7 @@ export default function HistoryPage() {
                             : sortedData.length > 0
                                 ? sortedData.map((item, i) => (
                                     <motion.div
-                                        key={item.id}
+                                        key={item.id ?? `${item.timestamp}-${item.event_type}`}
                                         className={`hp__item ${itemCls(item.risk_level)}`}
                                         initial={{ opacity: 0, x: -20 }}
                                         animate={{ opacity: 1, x: 0 }}
