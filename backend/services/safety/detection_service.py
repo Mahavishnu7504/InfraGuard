@@ -391,11 +391,20 @@ def process_frame(frame, camera_id: str = "") -> Dict[str, Any]:
         analytics_count = len(detections)
 
         # ── Sort: critical last so important boxes render on top ─────────────
-        detections.sort(key=lambda d: SEVERITY_ORDER.get(d.risk.upper(), 0))
+        detections.sort(key=lambda d: SEVERITY_ORDER.get(str(d.risk).upper(), 0))
 
         # ── Stage 7: Rendering ──────────────────────────────────────────────
+        # Rendering failures must NEVER cost us the detections/analytics that
+        # already succeeded above — draw_frame() isolates each layer
+        # internally, but we also guard the call itself as a last resort so
+        # that even a totally unexpected rendering error can't fall through
+        # to the outer except and trigger _empty().
         ts = time.perf_counter()
-        draw_frame(frame, detections, alerts, analytics)
+        try:
+            draw_frame(frame, detections, alerts, analytics)
+        except Exception:
+            print("[RENDER ERROR] draw_frame() failed entirely; returning frame undrawn:")
+            traceback.print_exc()
         ts = _tick("rendering_ms", ts)
 
         processing_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -1297,11 +1306,23 @@ def draw_frame(frame, detections: List[Detection], alerts: List[Dict], analytics
       2. detection boxes + labels
       3. trajectory lines
       4. HUD overlay        (foreground)
+
+    Each stage is isolated: a failure in one drawer is logged and skipped,
+    it never prevents the remaining layers from rendering, and it never
+    propagates up to process_frame (detections/analytics must still return
+    even if every single drawer fails).
     """
-    draw_danger_zones(frame, alerts)
-    draw_cinematic(frame, detections)
-    draw_trajectories(frame, detections)
-    draw_hud(frame, detections, alerts, analytics)
+    for name, fn, args in (
+        ("danger_zones", draw_danger_zones, (frame, alerts)),
+        ("cinematic",    draw_cinematic,    (frame, detections)),
+        ("trajectories", draw_trajectories, (frame, detections)),
+        ("hud",          draw_hud,          (frame, detections, alerts, analytics)),
+    ):
+        try:
+            fn(*args)
+        except Exception:
+            print(f"[RENDER ERROR] draw_{name}() failed, skipping this layer:")
+            traceback.print_exc()
 
 
 def draw_danger_zones(frame, intrusion_alerts: List[Dict]):
@@ -1316,7 +1337,7 @@ def draw_danger_zones(frame, intrusion_alerts: List[Dict]):
         if pts.ndim != 2 or pts.shape[1] != 2:
             continue
 
-        intrusion = any(a["zone"] == zone["name"] for a in intrusion_alerts)
+        intrusion = any(a.get("zone") == zone["name"] for a in intrusion_alerts)
         color     = (0, 0, 255) if intrusion else (255, 120, 0)
         alpha     = (0.12 + 0.10 * pulse) if intrusion else (0.04 + 0.04 * pulse)
 
@@ -1344,8 +1365,8 @@ def draw_cinematic(frame, detections: List[Detection]):
         color = RISK_COLORS.get(risk, RISK_COLORS["low"])
 
         # Build label:  "Worker #12  Helmet  96%"  or  "Excavator #2"
-        tier  = det.confidence_level
-        pct   = f"{det.confidence * 100:.0f}%"
+        tier  = det.confidence_level or "Unknown"
+        pct   = f"{max(det.confidence or 0, 0) * 100:.0f}%"
         if det.class_name in EQUIPMENT_CLASSES:
             label = f"{det.equipment_type or det.class_name.capitalize()} #{det.tracking_id}  {pct}"
         else:
@@ -1381,14 +1402,18 @@ def draw_trajectories(frame, detections: List[Detection]):
 
         color = RISK_COLORS.get(det.risk.lower(), RISK_COLORS["low"])
         for i in range(1, len(det.trajectory)):
-            cv2.line(frame, det.trajectory[i - 1], det.trajectory[i], color, 2)
+            try:
+                cv2.line(frame, det.trajectory[i - 1], det.trajectory[i], color, 2)
+            except Exception:
+                continue
 
 
 def draw_hud(frame, detections: List[Detection], intrusion_alerts: List[Dict], analytics: Dict):
     h, w = frame.shape[:2]
 
+    overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 76), (10, 15, 25), -1)
-    frame[:] = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
     # Row 1 — title
     cv2.putText(
