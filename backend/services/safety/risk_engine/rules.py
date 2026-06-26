@@ -1,6 +1,8 @@
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import math
+import logging
 
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------
 # CLASS ID MAP (YOLO Class Mapping)
@@ -31,28 +33,21 @@ CLASS_ID_MAP: Dict[int, str] = {
 }
 
 # Canonical label normalizer.
-# Converts any raw class_name from YOLO detections to a stable internal key.
-# All downstream logic (PPE checks, machine checks) uses these canonical names.
 LABEL_NORMALIZE: Dict[str, str] = {
-    # Helmet variants
     "Helmet":       "helmet",
     "helmet":       "helmet",
     "no helmet":    "no_helmet",
-    "head":         "head",          # bare head — treated as no helmet upstream
+    "head":         "head",
 
-    # Vest variants
     "vest":         "vest",
     "vests":        "vest",
     "no vest":      "no_vest",
 
-    # Other PPE
     "boots":        "boots",
     "glove":        "gloves",
 
-    # People
     "person":       "person",
 
-    # Heavy equipment
     "Bulldozer":    "bulldozer",
     "Dump Truck":   "dump_truck",
     "Excavator":    "excavator",
@@ -62,24 +57,17 @@ LABEL_NORMALIZE: Dict[str, str] = {
     "Mobile Crane": "mobile_crane",
     "Roller":       "roller",
 
-    # Structural defects
     "crack":        "crack",
 }
 
 
 def normalize_class_name(raw: str) -> str:
-    """
-    Return the canonical internal label for a raw YOLO class name.
-    Falls back to lowercased raw name if not in the map.
-    """
+    """Return the canonical internal label for a raw YOLO class name."""
     return LABEL_NORMALIZE.get(raw, raw.lower())
 
 
 # -----------------------------------------------------
 # SITE PROFILES
-# PPE requirements per site type — single source of truth.
-# NOTE: goggles removed (not detected by current model).
-#       boots added (detected and enforced).
 # -----------------------------------------------------
 
 SITE_PROFILES: Dict[str, Dict] = {
@@ -104,11 +92,27 @@ SITE_PROFILES: Dict[str, Dict] = {
     },
 }
 
-# Default active profile (construction site).
-# Other modules import these directly as the single source of truth.
-CRITICAL_PPE:   set = SITE_PROFILES["construction"]["critical_ppe"]
-IMPORTANT_PPE:  set = SITE_PROFILES["construction"]["important_ppe"]
+CRITICAL_PPE:    set = SITE_PROFILES["construction"]["critical_ppe"]
+IMPORTANT_PPE:   set = SITE_PROFILES["construction"]["important_ppe"]
 MACHINE_CLASSES: set = SITE_PROFILES["construction"]["machine_classes"]
+
+
+# -----------------------------------------------------
+# Fix 7: Dynamic danger radius per machine type
+# Different machines have different safety zones.
+# -----------------------------------------------------
+
+MACHINE_DANGER_RADIUS: Dict[str, int] = {
+    "roller":       120,
+    "loader":       250,
+    "bulldozer":    300,
+    "grader":       300,
+    "dump_truck":   350,
+    "mixer_truck":  350,
+    "mobile_crane": 400,
+    "excavator":    450,
+}
+DEFAULT_DANGER_RADIUS = 300  # fallback for unknown machines
 
 
 # -----------------------------------------------------
@@ -121,6 +125,12 @@ def bbox_center(box: List[float]) -> Tuple[float, float]:
     return (x1 + x2) / 2, (y1 + y2) / 2
 
 
+def bbox_dimensions(box: List[float]) -> Tuple[float, float]:
+    """Return (width, height) of a bounding box."""
+    x1, y1, x2, y2 = box
+    return abs(x2 - x1), abs(y2 - y1)
+
+
 def euclidean_distance(
         a: Tuple[float, float],
         b: Tuple[float, float]
@@ -131,8 +141,6 @@ def euclidean_distance(
 
 # -----------------------------------------------------
 # Severity Calculation
-# Returns (score: int, label: str) tuple.
-# risk_summary.py uses:  risk_score, severity = compute_severity(...)
 # -----------------------------------------------------
 
 SEVERITY_MAP: Dict[str, Tuple[int, str]] = {
@@ -144,12 +152,7 @@ SEVERITY_MAP: Dict[str, Tuple[int, str]] = {
 
 
 def compute_severity(risk_level: str) -> Tuple[int, str]:
-    """
-    Convert a risk level string to a numeric score and a display label.
-
-    Returns:
-        (score, label)  e.g. ("HIGH") → (100, "High")
-    """
+    """Convert a risk level string to a numeric score and display label."""
     return SEVERITY_MAP.get(risk_level, (0, "Safe"))
 
 
@@ -159,7 +162,6 @@ def compute_severity(risk_level: str) -> Tuple[int, str]:
 
 def compute_iou(box_a: List[float], box_b: List[float]) -> float:
     """Intersection over Union for two bounding boxes."""
-
     xA = max(box_a[0], box_b[0])
     yA = max(box_a[1], box_b[1])
     xB = min(box_a[2], box_b[2])
@@ -183,8 +185,130 @@ def compute_iou(box_a: List[float], box_b: List[float]) -> float:
 
 
 # -----------------------------------------------------
-# PPE Association
+# Fix 9: Detection Validation
+# Validate every detection before processing.
 # -----------------------------------------------------
+
+def validate_detection(det: Dict, confidence_threshold: float = 0.3) -> Tuple[bool, str]:
+    """
+    Validate a single detection dict has all required fields and passes
+    minimum quality thresholds.
+
+    Returns:
+        (valid: bool, reason: str)
+    """
+    if "bbox" not in det:
+        return False, "missing bbox"
+
+    if "class_name" not in det:
+        return False, "missing class_name"
+
+    if "confidence" not in det:
+        return False, "missing confidence"
+
+    bbox = det["bbox"]
+    if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4):
+        return False, "bbox must be a 4-element list"
+
+    x1, y1, x2, y2 = bbox
+    area = (x2 - x1) * (y2 - y1)
+    if area <= 0:
+        return False, f"bbox area is {area} (must be > 0)"
+
+    if det["confidence"] < confidence_threshold:
+        return False, f"confidence {det['confidence']:.2f} below threshold {confidence_threshold}"
+
+    return True, "ok"
+
+
+def filter_valid_detections(
+        detections: List[Dict],
+        confidence_threshold: float = 0.3
+) -> List[Dict]:
+    """
+    Return only detections that pass validation.
+    Logs every rejection with the reason.
+    """
+    valid = []
+    for i, det in enumerate(detections):
+        ok, reason = validate_detection(det, confidence_threshold)
+        if ok:
+            valid.append(det)
+        else:
+            label = det.get("class_name", "unknown")
+            logger.warning("Detection #%d (%s) rejected: %s", i, label, reason)
+    return valid
+
+
+# -----------------------------------------------------
+# Fix 1 + 4: Helmet — upper body region check
+# Helmet center must fall inside the top 30% of the person bbox,
+# AND IoU must exceed threshold.
+# -----------------------------------------------------
+
+def _helmet_in_upper_body(person_box: List[float], helmet_box: List[float]) -> bool:
+    """
+    Return True if the helmet center falls within the top 30% of person bbox.
+    """
+    x1, y1, x2, y2 = person_box
+    height = y2 - y1
+    upper_limit = y1 + height * 0.30
+
+    hx, hy = bbox_center(helmet_box)
+    return y1 <= hy <= upper_limit and x1 <= hx <= x2
+
+
+# -----------------------------------------------------
+# Fix 3: Vest — middle body region check
+# Vest center must fall in the middle 30–70% vertically.
+# -----------------------------------------------------
+
+def _vest_in_middle_body(person_box: List[float], vest_box: List[float]) -> bool:
+    """
+    Return True if the vest center falls within the middle body region (30–70%).
+    """
+    x1, y1, x2, y2 = person_box
+    height = y2 - y1
+    mid_top    = y1 + height * 0.30
+    mid_bottom = y1 + height * 0.70
+
+    vx, vy = bbox_center(vest_box)
+    return mid_top <= vy <= mid_bottom and x1 <= vx <= x2
+
+
+# -----------------------------------------------------
+# Fix 2: Boots — bottom 25% region check
+# Boot center must fall in the bottom 25% of person bbox.
+# -----------------------------------------------------
+
+def _boots_in_lower_body(person_box: List[float], boot_box: List[float]) -> bool:
+    """
+    Return True if the boot center falls within the bottom 25% of person bbox.
+    """
+    x1, y1, x2, y2 = person_box
+    height = y2 - y1
+    foot_start = y1 + height * 0.75
+
+    bx, by = bbox_center(boot_box)
+    return by >= foot_start and x1 <= bx <= x2
+
+
+# -----------------------------------------------------
+# Fix 1: PPE Association — spatial region + IoU
+# Each PPE type is matched using its appropriate body region
+# AND an IoU overlap check. IoU-only is no longer used.
+# -----------------------------------------------------
+
+# PPE labels that require special region-aware matching.
+_REGION_MATCHERS = {
+    "helmet": _helmet_in_upper_body,
+    "vest":   _vest_in_middle_body,
+    "boots":  _boots_in_lower_body,
+}
+
+# Gloves: no strong region constraint — use IoU only with a tighter threshold.
+_GLOVE_IOC_THRESHOLD = 0.05
+
 
 def associate_ppe_to_person(
         person_box: List[float],
@@ -192,21 +316,39 @@ def associate_ppe_to_person(
         iou_threshold: float = 0.1
 ) -> set:
     """
-    Associate PPE objects with a detected person using IoU.
-    Uses canonical (normalized) class names for matching.
+    Associate PPE items with a person using body-region checks AND IoU.
+
+    Rules:
+      - helmet  → must be in top 30% of person bbox AND IoU > threshold
+      - vest    → must be in middle 30–70% AND IoU > threshold
+      - boots   → must be in bottom 25% AND IoU > threshold
+      - gloves  → IoU > (smaller) threshold only
+      - other   → IoU > threshold (machines, unknown labels are skipped)
     """
     assigned = set()
 
     for det in detections:
         label = normalize_class_name(det["class_name"])
 
-        if label == "person":
+        # Skip non-PPE labels and persons.
+        if label in ("person",) | MACHINE_CLASSES | {"crack", "no_helmet", "no_vest",
+                                                      "head", "unknown"}:
             continue
 
-        iou = compute_iou(person_box, det["bbox"])
+        ppe_box = det["bbox"]
+        iou     = compute_iou(person_box, ppe_box)
 
-        if iou > iou_threshold:
-            assigned.add(label)
+        if label in _REGION_MATCHERS:
+            region_ok = _REGION_MATCHERS[label](person_box, ppe_box)
+            if region_ok and iou > iou_threshold:
+                assigned.add(label)
+        elif label == "gloves":
+            if iou > _GLOVE_IOC_THRESHOLD:
+                assigned.add(label)
+        else:
+            # Unknown PPE-like label — fall back to IoU only.
+            if iou > iou_threshold:
+                assigned.add(label)
 
     return assigned
 
@@ -218,8 +360,7 @@ def associate_ppe_to_person(
 def detect_ppe_violations(detections: List[Dict]) -> Dict:
     """
     Evaluate per-person PPE compliance.
-    Detections must have 'class_name' and 'bbox' keys.
-    class_name may be raw YOLO labels; normalization is applied internally.
+    class_name may be raw YOLO labels; normalization applied internally.
     """
     persons = [
         d for d in detections
@@ -230,23 +371,26 @@ def detect_ppe_violations(detections: List[Dict]) -> Dict:
     image_risk = "LOW"
 
     for idx, person in enumerate(persons):
-
         assigned = associate_ppe_to_person(person["bbox"], detections)
 
         missing_critical  = CRITICAL_PPE  - assigned
         missing_important = IMPORTANT_PPE - assigned
 
-        if missing_critical:
-            risk   = "HIGH"
-            reason = f"Missing critical PPE: {', '.join(sorted(missing_critical))}"
-        elif missing_important:
-            risk   = "MEDIUM"
-            reason = f"Missing important PPE: {', '.join(sorted(missing_important))}"
-        else:
-            risk   = "LOW"
-            reason = "All required PPE detected"
+        # Fix 10: Structured reason list for UI and debugging.
+        reasons = []
 
-        # Update image-level risk
+        if missing_critical:
+            risk = "HIGH"
+            for item in sorted(missing_critical):
+                reasons.append(f"Missing critical PPE: {item}")
+        elif missing_important:
+            risk = "MEDIUM"
+            for item in sorted(missing_important):
+                reasons.append(f"Missing important PPE: {item}")
+        else:
+            risk = "LOW"
+            reasons.append("All required PPE detected")
+
         if risk == "HIGH":
             image_risk = "HIGH"
         elif risk == "MEDIUM" and image_risk != "HIGH":
@@ -257,13 +401,31 @@ def detect_ppe_violations(detections: List[Dict]) -> Dict:
             "risk":         risk,
             "missing":      sorted(missing_critical | missing_important),
             "assigned_ppe": sorted(assigned),
-            "reason":       reason,
+            "reasons":      reasons,
+            # Keep single-string reason for backward compatibility.
+            "reason":       "; ".join(reasons),
         })
 
     return {
         "image_risk": image_risk,
         "persons":    report,
     }
+
+
+# -----------------------------------------------------
+# Fix 5 + 6: Crack Detection — structural defect path
+# Cracks are structural, not PPE events.
+# They skip PPE logic and return HIGH risk immediately.
+# -----------------------------------------------------
+
+def detect_cracks(detections: List[Dict]) -> List[Dict]:
+    """
+    Return all crack detections found in the frame.
+    """
+    return [
+        d for d in detections
+        if normalize_class_name(d["class_name"]) == "crack"
+    ]
 
 
 # -----------------------------------------------------
@@ -296,25 +458,43 @@ def detect_vehicle_proximity(
             distance = euclidean_distance(pc, mc)
 
             if distance < threshold:
+                machine_label = normalize_class_name(machine["class_name"])
                 violations.append({
                     "type":     "worker_near_machine",
-                    "machine":  normalize_class_name(machine["class_name"]),
+                    "machine":  machine_label,
                     "distance": int(distance),
+                    # Fix 10: reason string for UI.
+                    "reason":   f"Worker is {int(distance)}px from {machine_label}",
                 })
 
     return violations
 
 
 # -----------------------------------------------------
-# Danger Zone Detection
+# Fix 7 + 8: Danger Zone Detection — adaptive radius
+# Each machine type uses its own safety radius.
+# Radius is further expanded by machine physical size.
 # -----------------------------------------------------
 
-def detect_danger_zones(
-        detections: List[Dict],
-        radius: int = 350
-) -> List[Dict]:
+def _adaptive_danger_radius(machine_label: str, machine_box: List[float]) -> int:
     """
-    Flag workers inside the danger radius of any machine.
+    Compute the effective danger radius for a machine.
+
+    Base radius comes from MACHINE_DANGER_RADIUS per machine type.
+    An additional term proportional to machine size is added so that
+    physically larger machines have correspondingly larger safety zones.
+
+    effective_radius = base_radius + 0.25 * (machine_width + machine_height)
+    """
+    base   = MACHINE_DANGER_RADIUS.get(machine_label, DEFAULT_DANGER_RADIUS)
+    w, h   = bbox_dimensions(machine_box)
+    bonus  = 0.25 * (w + h)
+    return int(base + bonus)
+
+
+def detect_danger_zones(detections: List[Dict]) -> List[Dict]:
+    """
+    Flag workers inside the adaptive danger radius of any machine.
     """
     persons  = [
         d for d in detections
@@ -328,7 +508,9 @@ def detect_danger_zones(
     alerts = []
 
     for machine in machines:
-        mc = bbox_center(machine["bbox"])
+        machine_label = normalize_class_name(machine["class_name"])
+        mc            = bbox_center(machine["bbox"])
+        radius        = _adaptive_danger_radius(machine_label, machine["bbox"])
 
         for person in persons:
             pc       = bbox_center(person["bbox"])
@@ -336,26 +518,97 @@ def detect_danger_zones(
 
             if distance < radius:
                 alerts.append({
-                    "type":     "danger_zone",
-                    "machine":  normalize_class_name(machine["class_name"]),
-                    "distance": int(distance),
+                    "type":           "danger_zone",
+                    "machine":        machine_label,
+                    "distance":       int(distance),
+                    "danger_radius":  radius,
+                    # Fix 10: reason string for UI.
+                    "reason":         (
+                        f"Worker is {int(distance)}px from {machine_label} "
+                        f"(danger zone: {radius}px)"
+                    ),
                 })
 
     return alerts
 
 
 # -----------------------------------------------------
+# Fix 6: Crack-first evaluation gate
+# -----------------------------------------------------
+
+def _build_crack_result(cracks: List[Dict]) -> Dict:
+    """
+    Build the risk result dict for a frame containing structural cracks.
+    PPE and proximity checks are skipped entirely.
+    """
+    reasons = [
+        f"Structural crack detected (bbox: {c['bbox']})" for c in cracks
+    ]
+    risk_score, severity_label = compute_severity("HIGH")
+
+    return {
+        "risk_level":   "HIGH",
+        "risk_score":   risk_score,
+        "severity":     severity_label,
+        "crack":        True,
+        "crack_count":  len(cracks),
+        # Fix 10: reasons list.
+        "reasons":      reasons,
+        "reason":       "; ".join(reasons),
+        "ppe":          {"image_risk": "HIGH", "persons": []},
+        "proximity":    [],
+        "danger_zones": [],
+    }
+
+
+# -----------------------------------------------------
 # MAIN RISK EVALUATION
 # -----------------------------------------------------
 
-def evaluate_risk(detections: List[Dict]) -> Dict:
+def evaluate_risk(
+        detections: List[Dict],
+        confidence_threshold: float = 0.3
+) -> Dict:
     """
-    Standard risk evaluation wrapper (used by backend).
-    Accepts raw YOLO detections; normalization happens internally.
+    Full risk evaluation pipeline.
+
+    Evaluation order (Fix 6):
+      1. Validate all detections (Fix 9).
+      2. Check for structural cracks → if found, return HIGH immediately (Fix 5).
+      3. PPE compliance check (Fix 1–4).
+      4. Worker–machine proximity check.
+      5. Danger zone check with adaptive radius (Fix 7–8).
+      6. Combine results with structured reasons (Fix 10).
+
+    Args:
+        detections:           Raw YOLO detections. Each must have
+                              'class_name', 'bbox', 'confidence'.
+        confidence_threshold: Minimum confidence to accept a detection.
+
+    Returns:
+        Dict with risk_level, risk_score, severity, reasons, ppe,
+        proximity, danger_zones, and pipeline_stats.
     """
-    ppe       = detect_ppe_violations(detections)
-    proximity = detect_vehicle_proximity(detections)
-    danger    = detect_danger_zones(detections)
+    # ── Fix 9: Validate every detection first ──────────────────────────────
+    valid_detections = filter_valid_detections(detections, confidence_threshold)
+
+    pipeline_stats = {
+        "detections_in":      len(detections),
+        "detections_valid":   len(valid_detections),
+        "detections_rejected": len(detections) - len(valid_detections),
+    }
+
+    # ── Fix 5 + 6: Crack gate ──────────────────────────────────────────────
+    cracks = detect_cracks(valid_detections)
+    if cracks:
+        result = _build_crack_result(cracks)
+        result["pipeline_stats"] = pipeline_stats
+        return result
+
+    # ── PPE, proximity, danger zones ───────────────────────────────────────
+    ppe       = detect_ppe_violations(valid_detections)
+    proximity = detect_vehicle_proximity(valid_detections)
+    danger    = detect_danger_zones(valid_detections)
 
     risk_level = ppe["image_risk"]
 
@@ -366,11 +619,31 @@ def evaluate_risk(detections: List[Dict]) -> Dict:
 
     risk_score, severity_label = compute_severity(risk_level)
 
+    # ── Fix 10: Collect all reasons for top-level explanation ──────────────
+    top_reasons: List[str] = []
+
+    for p in ppe["persons"]:
+        top_reasons.extend(p.get("reasons", []))
+
+    for prox in proximity:
+        top_reasons.append(prox.get("reason", ""))
+
+    for zone in danger:
+        top_reasons.append(zone.get("reason", ""))
+
+    if not top_reasons:
+        top_reasons = ["No violations detected"]
+
     return {
         "risk_level":     risk_level,
         "risk_score":     risk_score,
         "severity":       severity_label,
+        "crack":          False,
+        # Fix 10: structured reasons.
+        "reasons":        top_reasons,
+        "reason":         "; ".join(top_reasons),
         "ppe":            ppe,
         "proximity":      proximity,
         "danger_zones":   danger,
+        "pipeline_stats": pipeline_stats,
     }

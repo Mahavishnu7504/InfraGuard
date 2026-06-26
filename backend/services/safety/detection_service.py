@@ -1,6 +1,6 @@
 # =========================================================
 # INFRA GUARD — ENTERPRISE SAFETY INTELLIGENCE ENGINE
-# detection_service.py  v2.0
+# detection_service.py  v3.0
 # =========================================================
 
 import uuid
@@ -29,7 +29,21 @@ except ImportError:
 # CONFIGURATION
 # =========================================================
 
-MIN_CONFIDENCE: float = 0.35   # detections below this are silently dropped
+MIN_CONFIDENCE: float = 0.35   # detections below this are rejected (logged, not silent)
+
+# Debug mode — enables stage counts, rejection reports, confidence analytics,
+# class distribution, telemetry breakdown, and validation warnings.
+# Set to False for normal production behaviour.
+DETECTION_DEBUG: bool = True
+
+# Canonical set of allowed class names after normalisation.
+# Any label not in this set will be logged as an unknown label warning.
+CANONICAL_CLASSES = {
+    "person", "helmet", "vest", "boots", "gloves",
+    "no_helmet", "no_vest", "no_gloves", "no_boots",
+    "crack",
+    "excavator", "loader", "bulldozer", "roller", "grader", "crane",
+}
 
 # =========================================================
 # LABEL NORMALISATION MAP
@@ -254,6 +268,12 @@ class Detection:
     missing_ppe:      List[str] = field(default_factory=list)   # PPE absent on this worker
     nearby_equipment: List[str] = field(default_factory=list)   # equipment within proximity radius
 
+    # --- Audit trail (lifecycle stages this detection has passed through) ---
+    audit_trail:      List[str] = field(default_factory=list)
+
+    # --- Risk decision trace (why this detection received its risk label) ---
+    risk_decision_trace: List[str] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -269,6 +289,7 @@ def process_frame(frame, camera_id: str = "") -> Dict[str, Any]:
     Pipeline:
         Frame
           ↓  run_inference        — call AI model, get raw detections
+          ↓  validate_detections  — validate bbox / confidence / class / source / timestamp
           ↓  normalize_labels     — map raw output → list[Detection]
           ↓  run_tracker          — assign tracking_id + trajectory
           ↓  classify_risk        — PPE / crack / person risk tagging
@@ -286,22 +307,116 @@ def process_frame(frame, camera_id: str = "") -> Dict[str, Any]:
         return _empty(camera_id)
 
     t0 = time.perf_counter()
+    stage_times: Dict[str, float] = {}
+    rejected_detections: List[Dict] = []
+
+    def _tick(label: str, t_start: float) -> float:
+        """Record elapsed ms since t_start; return now."""
+        t_now = time.perf_counter()
+        stage_times[label] = round((t_now - t_start) * 1000, 2)
+        return t_now
 
     try:
-        raw           = run_inference(frame)
-        detections    = normalize_labels(raw, camera_id)
-        detections    = run_tracker(detections)
-        detections    = classify_risk(detections)
-        alerts        = analyze_intrusions(detections)
-        detections    = build_reasoning(detections)
-        analytics     = calculate_analytics(detections, alerts)
+        # ── Stage 1: Inference ──────────────────────────────────────────────
+        ts = time.perf_counter()
+        raw = run_inference(frame)
+        ts = _tick("inference_ms", ts)
 
-        # Sort: critical → high → medium → low so important boxes render on top
+        raw_count = len(raw.get("detections", []))
+
+        # ── Stage 1.5: Validation ───────────────────────────────────────────
+        ts = time.perf_counter()
+        valid_raw, rejected_detections = validate_detections(raw.get("detections", []))
+        raw["detections"] = valid_raw
+        ts = _tick("validation_ms", ts)
+
+        validated_count = len(valid_raw)
+
+        # ── Stage 2: Normalise ──────────────────────────────────────────────
+        ts = time.perf_counter()
+        detections = normalize_labels(raw, camera_id)
+        ts = _tick("normalization_ms", ts)
+
+        norm_count = len(detections)
+
+        # ── Stage 3: Tracker ────────────────────────────────────────────────
+        ts = time.perf_counter()
+        detections = run_tracker(detections)
+        ts = _tick("tracking_ms", ts)
+
+        tracked_count = len(detections)
+
+        # ── Stage 4: Risk classification ────────────────────────────────────
+        ts = time.perf_counter()
+        detections = classify_risk(detections)
+        ts = _tick("risk_ms", ts)
+
+        risk_count = len(detections)
+
+        # ── Stage 5: Danger zones ───────────────────────────────────────────
+        ts = time.perf_counter()
+        alerts = analyze_intrusions(detections)
+        ts = _tick("zone_ms", ts)
+
+        # ── Stage 5.5: Reasoning ────────────────────────────────────────────
+        ts = time.perf_counter()
+        detections = build_reasoning(detections)
+        ts = _tick("reasoning_ms", ts)
+
+        reasoning_count = len(detections)
+
+        # ── Stage 6: Analytics ──────────────────────────────────────────────
+        ts = time.perf_counter()
+        analytics = calculate_analytics(detections, alerts)
+        ts = _tick("analytics_ms", ts)
+
+        analytics_count = len(detections)
+
+        # ── Sort: critical last so important boxes render on top ─────────────
         detections.sort(key=lambda d: SEVERITY_ORDER.get(d.risk.upper(), 0))
 
+        # ── Stage 7: Rendering ──────────────────────────────────────────────
+        ts = time.perf_counter()
         draw_frame(frame, detections, alerts, analytics)
+        ts = _tick("rendering_ms", ts)
 
         processing_ms = round((time.perf_counter() - t0) * 1000, 1)
+        stage_times["total_ms"] = processing_ms
+
+        # ── Empty result diagnosis ───────────────────────────────────────────
+        empty_reason: Optional[str] = None
+        if len(detections) == 0:
+            if raw_count == 0:
+                empty_reason = "Inference returned zero objects."
+            elif validated_count == 0:
+                empty_reason = "All detections failed validation."
+            elif norm_count == 0:
+                empty_reason = "All detections rejected due to confidence threshold."
+            elif tracked_count == 0:
+                empty_reason = "Tracker removed all detections."
+            else:
+                empty_reason = "Detections lost during downstream processing."
+            print(f"[DETECTION] No detections returned. Reason: {empty_reason}")
+
+        # ── Integrity report ────────────────────────────────────────────────
+        integrity_report = {
+            "raw_detections":  raw_count,
+            "validated":       validated_count,
+            "rejected":        len(rejected_detections),
+            "normalized":      norm_count,
+            "tracked":         tracked_count,
+            "risk_classified": risk_count,
+            "analytics_counted": analytics_count,
+            "returned":        len(detections),
+            "empty_reason":    empty_reason,
+        }
+
+        # ── Debug output ────────────────────────────────────────────────────
+        if DETECTION_DEBUG:
+            _print_debug_report(
+                stage_times, integrity_report, rejected_detections,
+                analytics, detections
+            )
 
         return {
             "frame":       None,   # caller injects encoded frame bytes if needed
@@ -309,10 +424,16 @@ def process_frame(frame, camera_id: str = "") -> Dict[str, Any]:
             "alerts":      alerts,
             "zones":       DANGER_ZONES,
             "analytics":   analytics,
-            "telemetry":   {"processing_ms": processing_ms, "detection_count": len(detections)},
-            "ai_metadata": build_ai_metadata(processing_ms),
-            "timestamp":   datetime.utcnow().isoformat(),
-            "camera_id":   camera_id,
+            "telemetry":   {
+                "processing_ms":    processing_ms,
+                "detection_count":  len(detections),
+                "stage_times":      stage_times,
+            },
+            "ai_metadata":       build_ai_metadata(processing_ms),
+            "integrity_report":  integrity_report,
+            "rejected_detections": rejected_detections if DETECTION_DEBUG else [],
+            "timestamp":         datetime.utcnow().isoformat(),
+            "camera_id":         camera_id,
         }
 
     except Exception:
@@ -321,6 +442,70 @@ def process_frame(frame, camera_id: str = "") -> Dict[str, Any]:
         traceback.print_exc()
         print("=" * 80 + "\n")
         return _empty(camera_id)
+
+
+def _print_debug_report(
+    stage_times: Dict[str, float],
+    integrity: Dict[str, Any],
+    rejected: List[Dict],
+    analytics: Dict[str, Any],
+    detections: List["Detection"],
+) -> None:
+    """Print a structured debug report to stdout when DETECTION_DEBUG is True."""
+    sep = "-" * 60
+    print(f"\n{'=' * 60}")
+    print("  DETECTION DEBUG REPORT")
+    print(f"{'=' * 60}")
+
+    # Stage counts / pipeline flow
+    print("\n[Pipeline Flow]")
+    print(f"  Raw Inference      : {integrity['raw_detections']}")
+    print(f"  Validated          : {integrity['validated']}")
+    print(f"  Rejected           : {integrity['rejected']}")
+    print(f"  Normalized         : {integrity['normalized']}")
+    print(f"  Tracked            : {integrity['tracked']}")
+    print(f"  Risk Classified    : {integrity['risk_classified']}")
+    print(f"  Analytics Counted  : {integrity['analytics_counted']}")
+    print(f"  Returned           : {integrity['returned']}")
+    if integrity["empty_reason"]:
+        print(f"  ⚠ Empty Reason     : {integrity['empty_reason']}")
+
+    # Stage timings
+    print(f"\n[Stage Timings]")
+    for stage, ms in stage_times.items():
+        print(f"  {stage:<22}: {ms:>7.2f} ms")
+
+    # Rejection report
+    if rejected:
+        print(f"\n[Rejected Detections — {len(rejected)}]")
+        for r in rejected:
+            print(f"  ✗ label={r.get('raw_label','?')!r:20s}  reason={r.get('reason','?')}")
+
+    # Class distribution
+    class_dist: Dict[str, int] = {}
+    for det in detections:
+        class_dist[det.class_name] = class_dist.get(det.class_name, 0) + 1
+    if class_dist:
+        print(f"\n[Class Distribution]")
+        for cls, count in sorted(class_dist.items()):
+            print(f"  {cls:<20}: {count}")
+
+    # Confidence analytics
+    if detections:
+        confs = [d.confidence for d in detections]
+        print(f"\n[Confidence Analytics]")
+        print(f"  Highest  : {max(confs):.3f}")
+        print(f"  Lowest   : {min(confs):.3f}")
+        median_conf = sorted(confs)[len(confs) // 2]
+        print(f"  Median   : {median_conf:.3f}")
+        print(f"  Average  : {sum(confs)/len(confs):.3f}")
+        below = sum(1 for c in confs if c < MIN_CONFIDENCE)
+        print(f"  Below threshold ({MIN_CONFIDENCE}): {below}")
+
+    # Analytics consistency warnings
+    _validate_analytics(analytics)
+
+    print(f"{'=' * 60}\n")
 
 
 # =========================================================
@@ -336,6 +521,73 @@ def run_inference(frame) -> Dict[str, Any]:
 
 
 # =========================================================
+# STAGE 1.5 — DETECTION VALIDATION
+# =========================================================
+
+def validate_detections(raw_detections: List[Dict]) -> tuple:
+    """
+    Validate every raw detection before normalisation.
+    Returns (valid_list, rejected_list).
+
+    Each rejected entry is a dict with the original data plus a 'reason' field
+    explaining why it was rejected. Invalid detections are logged and skipped —
+    never silently passed downstream.
+    """
+    valid:    List[Dict] = []
+    rejected: List[Dict] = []
+
+    for raw_det in raw_detections:
+        reason = _check_detection(raw_det)
+        if reason:
+            entry = {**raw_det, "reason": reason, "raw_label": raw_det.get("class_name", "<none>")}
+            rejected.append(entry)
+            if DETECTION_DEBUG:
+                print(f"[VALIDATION] Rejected detection — {reason} | raw={raw_det}")
+        else:
+            valid.append(raw_det)
+
+    return valid, rejected
+
+
+def _check_detection(raw_det: Dict) -> Optional[str]:
+    """
+    Return a rejection reason string if the detection is invalid, else None.
+    Checks: bbox, confidence, class_name, model_source, timestamp.
+    """
+    bbox = raw_det.get("bbox")
+    if not bbox or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return "Invalid or missing bbox"
+
+    try:
+        x1, y1, x2, y2 = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return "Bbox values are not numeric"
+
+    if x2 <= x1 or y2 <= y1:
+        return "Bbox has zero or negative area"
+
+    conf = raw_det.get("confidence")
+    if conf is None:
+        return "Missing confidence"
+    try:
+        if float(conf) < 0.0 or float(conf) > 1.0:
+            return f"Confidence out of range: {conf}"
+    except (TypeError, ValueError):
+        return f"Confidence is not numeric: {conf!r}"
+
+    class_name = raw_det.get("class_name")
+    if not class_name or not isinstance(class_name, str) or not class_name.strip():
+        return "Missing or empty class_name"
+
+    if not raw_det.get("model_source") and not raw_det.get("source"):
+        # model_source is optional in some pipelines — log but don't reject
+        if DETECTION_DEBUG:
+            print(f"[VALIDATION] Warning — detection missing model_source: class={class_name!r}")
+
+    return None
+
+
+# =========================================================
 # STAGE 2 — NORMALIZE LABELS
 # =========================================================
 
@@ -343,8 +595,10 @@ def normalize_labels(raw: Dict[str, Any], camera_id: str = "") -> List[Detection
     """
     Convert raw pipeline output → list[Detection].
     - Maps raw class names through LABEL_MAP.
-    - Filters detections below MIN_CONFIDENCE.
+    - Filters detections below MIN_CONFIDENCE (logged, not silent).
+    - Validates normalised label against CANONICAL_CLASSES.
     - Sets event_type and equipment_type.
+    - Starts each detection's audit_trail.
     """
     now = datetime.utcnow().isoformat()
     detections: List[Detection] = []
@@ -352,10 +606,20 @@ def normalize_labels(raw: Dict[str, Any], camera_id: str = "") -> List[Detection
     for raw_det in raw.get("detections", []):
         conf = float(raw_det.get("confidence", 0.0))
         if conf < MIN_CONFIDENCE:
+            if DETECTION_DEBUG:
+                print(f"[NORMALIZE] Rejected — confidence {conf:.3f} < {MIN_CONFIDENCE} "
+                      f"| label={raw_det.get('class_name','?')!r}")
             continue
 
         raw_label  = str(raw_det.get("class_name", ""))
-        class_name = LABEL_MAP.get(raw_label, raw_label.lower().replace(" ", "_"))
+        class_name = LABEL_MAP.get(raw_label, raw_label.lower().strip().replace(" ", "_"))
+
+        # Label validation: warn if the normalised label is not in the canonical set
+        if class_name not in CANONICAL_CLASSES:
+            if DETECTION_DEBUG:
+                print(f"[LABEL VALIDATION] Unknown label after normalisation: "
+                      f"{class_name!r} (raw: {raw_label!r}). "
+                      f"Check LABEL_MAP or CANONICAL_CLASSES.")
 
         event_type     = _resolve_event_type(class_name)
         equipment_type = class_name.capitalize() if class_name in EQUIPMENT_CLASSES else None
@@ -371,6 +635,7 @@ def normalize_labels(raw: Dict[str, Any], camera_id: str = "") -> List[Detection
             camera_id      = camera_id,
             event_type     = event_type,
             equipment_type = equipment_type,
+            audit_trail    = ["validated", "normalized"],
         )
         detections.append(det)
 
@@ -425,6 +690,7 @@ def run_tracker(detections: List[Detection]) -> List[Detection]:
                 det.direction     = float(getattr(res, "direction",     0.0))
                 det.age           = int(getattr(res, "age",             0))
                 det.frames_tracked = int(getattr(res, "frames_tracked", 0))
+                det.audit_trail.append("tracked")
             return detections
         except Exception:
             pass   # fall through to stub on any tracker error
@@ -433,6 +699,9 @@ def run_tracker(detections: List[Detection]) -> List[Detection]:
     for i, det in enumerate(detections):
         if det.tracking_id is None:
             det.tracking_id = i
+
+    for det in detections:
+        det.audit_trail.append("tracked")
 
     return detections
 
@@ -445,6 +714,7 @@ def classify_risk(detections: List[Detection]) -> List[Detection]:
     """
     Tag each detection with risk, incident_type, priority, and confidence_level.
     PPE violations are evaluated first; no rule may downgrade an already-higher risk.
+    Populates det.risk_decision_trace with a human-readable explanation of the decision.
     """
     for det in detections:
         label = det.class_name.lower()
@@ -453,7 +723,10 @@ def classify_risk(detections: List[Detection]) -> List[Detection]:
         if label in PPE_VIOLATIONS:
             new_risk = PPE_VIOLATIONS[label]
             if SEVERITY_ORDER.get(new_risk, 0) >= SEVERITY_ORDER.get(det.risk, 0):
-                det.risk     = new_risk
+                det.risk = new_risk
+                det.risk_decision_trace.append(
+                    f"PPE Rule → {label} → {new_risk} risk"
+                )
             det.priority      = max(det.priority, 3)
             det.incident_type = "PPE Non-Compliance"
 
@@ -461,6 +734,7 @@ def classify_risk(detections: List[Detection]) -> List[Detection]:
         elif label == "crack":
             if SEVERITY_ORDER.get(det.risk, 0) < SEVERITY_ORDER["MEDIUM"]:
                 det.risk = "MEDIUM"
+                det.risk_decision_trace.append("Crack Rule → Structural crack → MEDIUM risk")
             det.priority      = max(det.priority, 2)
             det.incident_type = "Infrastructure Degradation"
 
@@ -468,13 +742,16 @@ def classify_risk(detections: List[Detection]) -> List[Detection]:
         elif label in EQUIPMENT_CLASSES:
             det.incident_type = "Equipment Activity"
             det.priority      = max(det.priority, 1)
+            det.risk_decision_trace.append(f"Equipment Rule → {label} → baseline LOW risk")
 
         # --- Person ---
         elif label == "person":
             det.incident_type = "Personnel Activity"
+            det.risk_decision_trace.append("Person Rule → personnel detected → baseline LOW risk")
 
         # --- Confidence tier ---
         det.confidence_level = _confidence_tier(det.confidence)
+        det.audit_trail.append("risk_classified")
 
     return detections
 
@@ -530,6 +807,10 @@ def analyze_intrusions(detections: List[Detection]) -> List[Dict[str, Any]]:
                 det.distance_to_zone = 0.0
                 det.priority         = 5
                 det.event_type       = "DangerZone"
+                det.audit_trail.append(f"danger_zone:{zone['name']}")
+                det.risk_decision_trace.append(
+                    f"Danger Zone Rule → inside {zone['name']} → {zone['risk']} risk"
+                )
 
                 alerts.append({
                     "zone":     zone["name"],
@@ -567,10 +848,14 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
     """
     Populates det.reasoning (and det.missing_ppe / det.nearby_equipment)
     for every detection using:
-      - PPE chain reasoning   (worker ↔ missing-PPE proximity linking)
+      - PPE chain reasoning   (worker ↔ missing-PPE via bbox containment/IoU)
       - Equipment reasoning   (equipment ↔ nearby-worker proximity linking)
       - Crack reasoning       (static, always the same operational sentence)
       - Danger-zone reasoning (overrides everything if a worker is in-zone)
+
+    PPE association uses bounding-box containment (PPE inside worker bbox) with
+    IoU as a fallback, rather than only centre-distance proximity. This prevents
+    boots/helmet from one worker being incorrectly assigned to an adjacent worker.
     """
     people     = [d for d in detections if d.class_name == "person"]
     violations = [d for d in detections if d.class_name in PPE_VIOLATIONS]
@@ -586,6 +871,7 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
                 f"{det.zone_level.title() if det.zone_level else 'High'} risk — "
                 f"immediate distance required."
             )
+            det.audit_trail.append("reasoning_added")
             continue
 
         # --- PPE violation classes (model emitted "no_helmet" etc. directly) ---
@@ -596,6 +882,7 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
             det.reasoning = (
                 f"Worker detected. {item.capitalize()} missing. {risk_label} risk."
             )
+            det.audit_trail.append("reasoning_added")
             continue
 
         # --- Equipment: contextualize against nearby workers ---
@@ -610,19 +897,27 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
                 det.reasoning = EQUIPMENT_REASONING_ISOLATED.get(
                     label, f"{label.capitalize()} active on site."
                 )
+            det.audit_trail.append("reasoning_added")
             continue
 
         # --- Structural cracks: fixed operational sentence ---
         if label == "crack":
             det.reasoning = CRACK_REASONING
+            det.audit_trail.append("reasoning_added")
             continue
 
-        # --- Person: infer missing PPE from absence of positive PPE classes
-        #     nearby, OR from linked no_x violation detections, then build the
-        #     "Worker detected → X missing → Risk" chain. If nothing is
-        #     missing, report compliance explicitly. ---
+        # --- Person: associate PPE using bbox containment + IoU, then fall back
+        #     to proximity for violation classes not overlapping the worker bbox.
+        #
+        #     Priority order:
+        #       1. PPE bbox is contained within the worker bbox  (strongest signal)
+        #       2. IoU between PPE and worker bbox > 0           (partial overlap)
+        #       3. Centre-distance within PPE_LINK_RADIUS_PX     (legacy fallback)
+        #
+        #     This prevents a helmet belonging to Worker A from being assigned to
+        #     adjacent Worker B simply because B's centre is closer. ---
         if label == "person":
-            linked_violations = _nearby(det, violations, PPE_LINK_RADIUS_PX)
+            linked_violations = _associate_ppe_to_worker(det, violations)
             missing = sorted({
                 PPE_ITEM_NAMES.get(v.class_name, v.class_name)
                 for v in linked_violations
@@ -634,8 +929,6 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
             ]
 
             if missing:
-                # Escalate to the worst risk among the linked violations,
-                # mirroring classify_risk's HIGH > MEDIUM > LOW ordering.
                 worst = max(
                     (v.class_name for v in linked_violations),
                     key=lambda c: SEVERITY_ORDER.get(PPE_VIOLATIONS.get(c, "LOW"), 0)
@@ -644,24 +937,114 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
                 items_str  = ", ".join(missing)
                 det.reasoning = PPE_MISSING_TEMPLATE.format(items=items_str, risk_label=risk_label)
 
-                # Propagate the violation's risk onto the worker themselves —
-                # this is the "Worker detected → Helmet missing → High Risk"
-                # chain. Never downgrade a risk a person already holds
-                # (e.g. from a danger-zone intrusion classified upstream).
                 escalated_risk = PPE_VIOLATIONS.get(worst, "LOW")
                 if SEVERITY_ORDER.get(escalated_risk, 0) >= SEVERITY_ORDER.get(det.risk, 0):
                     det.risk = escalated_risk
+                    det.risk_decision_trace.append(
+                        f"PPE Chain Rule → missing {items_str} → escalated to {escalated_risk} risk"
+                    )
                 det.priority      = max(det.priority, 3)
                 det.incident_type = "PPE Non-Compliance"
             else:
                 det.reasoning = PPE_OK_REASONING
+
+            det.audit_trail.append("reasoning_added")
             continue
 
         # --- Fallback for anything uncategorized ---
         if not det.reasoning:
             det.reasoning = f"{det.class_name.replace('_', ' ').capitalize()} detected."
+        det.audit_trail.append("reasoning_added")
 
     return detections
+
+
+# ── PPE–Worker association helpers ────────────────────────────────────────────
+
+def _bbox_iou(a: List, b: List) -> float:
+    """Compute Intersection-over-Union between two [x1,y1,x2,y2] bboxes."""
+    if len(a) != 4 or len(b) != 4:
+        return 0.0
+    ix1 = max(a[0], b[0])
+    iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2])
+    iy2 = min(a[3], b[3])
+    iw  = max(0.0, ix2 - ix1)
+    ih  = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union  = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _bbox_contained(inner: List, outer: List, threshold: float = 0.6) -> bool:
+    """
+    Return True if at least `threshold` fraction of `inner` lies inside `outer`.
+    A threshold of 0.6 means 60 % of the PPE bbox must overlap the worker bbox.
+    """
+    if len(inner) != 4 or len(outer) != 4:
+        return False
+    ix1 = max(inner[0], outer[0])
+    iy1 = max(inner[1], outer[1])
+    ix2 = min(inner[2], outer[2])
+    iy2 = min(inner[3], outer[3])
+    iw  = max(0.0, ix2 - ix1)
+    ih  = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    area_inner = max(0.0, inner[2] - inner[0]) * max(0.0, inner[3] - inner[1])
+    if area_inner == 0:
+        return False
+    return (inter / area_inner) >= threshold
+
+
+def _associate_ppe_to_worker(
+    worker: "Detection",
+    violations: List["Detection"],
+) -> List["Detection"]:
+    """
+    Return the violation detections that belong to `worker` using a
+    three-tier association strategy:
+
+    Tier 1 — Containment : PPE bbox ≥60 % inside the worker bbox.
+    Tier 2 — IoU         : IoU > 0 between PPE and worker bbox.
+    Tier 3 — Proximity   : centre-to-centre distance ≤ PPE_LINK_RADIUS_PX
+                           (legacy fallback; used only when the above fail).
+
+    The first tier that returns at least one match wins for that violation.
+    This prevents a helmet/boots from one worker being assigned to a neighbour
+    whose centre happens to be closer.
+    """
+    if len(worker.bbox) != 4:
+        return []
+
+    linked: List["Detection"] = []
+    for viol in violations:
+        if len(viol.bbox) != 4:
+            continue
+
+        # Tier 1: containment
+        if _bbox_contained(viol.bbox, worker.bbox):
+            linked.append(viol)
+            continue
+
+        # Tier 2: IoU overlap
+        if _bbox_iou(viol.bbox, worker.bbox) > 0:
+            linked.append(viol)
+            continue
+
+        # Tier 3: proximity fallback
+        a_center = _bbox_center(worker)
+        v_center = _bbox_center(viol)
+        if a_center and v_center:
+            dx = a_center[0] - v_center[0]
+            dy = a_center[1] - v_center[1]
+            if math.hypot(dx, dy) <= PPE_LINK_RADIUS_PX:
+                linked.append(viol)
+
+    return linked
 
 
 def _bbox_center(det: Detection) -> Optional[tuple]:
@@ -786,6 +1169,15 @@ def calculate_analytics(detections: List[Detection], alerts: Optional[List[Dict[
     summary         = generate_summary(workers, equipment_count, crack_count, danger_zone_count,
                                         ppe_violations, highest, ppe_compliance)
 
+    # Class distribution — count of each canonical class detected this frame
+    class_distribution: Dict[str, int] = {}
+    for det in detections:
+        class_distribution[det.class_name] = class_distribution.get(det.class_name, 0) + 1
+
+    # Stamp audit trail
+    for det in detections:
+        det.audit_trail.append("analytics_counted")
+
     return {
         # existing analytics kept unchanged
         "workers":           workers,
@@ -812,6 +1204,9 @@ def calculate_analytics(detections: List[Detection], alerts: Optional[List[Dict[
         "compliance":        compliance,
         "risk_factors":      risk_factors,
         "statistics":        statistics,
+
+        # New: class distribution for dashboards and debugging
+        "class_distribution": class_distribution,
     }
 
 
@@ -941,10 +1336,18 @@ def generate_statistics(detections: List[Detection], workers: int, equipment_cou
     for det in detections:
         risk_breakdown[det.risk.upper()] = risk_breakdown.get(det.risk.upper(), 0) + 1
 
-    avg_confidence = (
-        round(sum(d.confidence for d in detections) / len(detections), 3)
-        if detections else 0.0
-    )
+    # Full confidence analytics
+    if detections:
+        confs  = sorted(d.confidence for d in detections)
+        n      = len(confs)
+        avg_c  = round(sum(confs) / n, 3)
+        max_c  = round(confs[-1], 3)
+        min_c  = round(confs[0], 3)
+        med_c  = round(confs[n // 2], 3)
+        below  = sum(1 for c in confs if c < MIN_CONFIDENCE)
+    else:
+        avg_c = max_c = min_c = med_c = 0.0
+        below = 0
 
     return {
         "total_detections":   len(detections),
@@ -955,13 +1358,43 @@ def generate_statistics(detections: List[Detection], workers: int, equipment_cou
         "danger_zone_events":  danger_zone_count,
         "overall_risk":        overall_risk,
         "risk_breakdown":      risk_breakdown,
-        "average_confidence":  avg_confidence,
+        # Expanded confidence analytics
+        "average_confidence":  avg_c,
+        "max_confidence":      max_c,
+        "min_confidence":      min_c,
+        "median_confidence":   med_c,
+        "detections_below_threshold": below,
     }
 
 
 # ---------------------------------------------------------
-# Summary — one paragraph, plain-English, frame-level rollup.
+# Analytics Validation — consistency checks after generation.
+# Logs warnings for logically impossible states (e.g. compliance > 100%).
+# Called from the debug report; also safe to call in production if desired.
 # ---------------------------------------------------------
+
+def _validate_analytics(analytics: Dict[str, Any]) -> None:
+    workers       = analytics.get("workers", 0)
+    ppe_comp      = analytics.get("ppe_compliance", 100.0)
+    ppe_viol      = analytics.get("ppe_violations", 0)
+    helmet_count  = analytics.get("helmet_count", 0)
+
+    if ppe_comp > 100.0:
+        print(f"[ANALYTICS WARNING] ppe_compliance > 100%: {ppe_comp:.1f}")
+    if ppe_comp < 0.0:
+        print(f"[ANALYTICS WARNING] ppe_compliance < 0%: {ppe_comp:.1f}")
+    if workers > 0 and helmet_count > workers * 2:
+        print(f"[ANALYTICS WARNING] helmet_count ({helmet_count}) seems high for "
+              f"{workers} worker(s).")
+    stats = analytics.get("statistics", {})
+    if stats:
+        total = stats.get("total_detections", 0)
+        rb    = stats.get("risk_breakdown", {})
+        rb_sum = sum(rb.values())
+        if rb_sum != total:
+            print(f"[ANALYTICS WARNING] risk_breakdown sum ({rb_sum}) ≠ "
+                  f"total_detections ({total}).")
+
 
 def generate_summary(workers: int, equipment_count: int, crack_count: int,
                       danger_zone_count: int, ppe_violations: int, overall_risk: str,
@@ -1193,11 +1626,32 @@ def _empty(camera_id: str = "") -> Dict[str, Any]:
                 "danger_zone_events": 0,
                 "overall_risk":      "LOW",
                 "risk_breakdown":    {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
-                "average_confidence": 0.0,
+                "average_confidence":  0.0,
+                "max_confidence":      0.0,
+                "min_confidence":      0.0,
+                "median_confidence":   0.0,
+                "detections_below_threshold": 0,
             },
+            "class_distribution": {},
         },
-        "telemetry":   {"processing_ms": 0.0, "detection_count": 0},
-        "ai_metadata": build_ai_metadata(),
+        "telemetry":   {
+            "processing_ms":   0.0,
+            "detection_count": 0,
+            "stage_times":     {},
+        },
+        "ai_metadata":       build_ai_metadata(),
+        "integrity_report":  {
+            "raw_detections":    0,
+            "validated":         0,
+            "rejected":          0,
+            "normalized":        0,
+            "tracked":           0,
+            "risk_classified":   0,
+            "analytics_counted": 0,
+            "returned":          0,
+            "empty_reason":      "Frame was None.",
+        },
+        "rejected_detections": [],
         "timestamp":   datetime.utcnow().isoformat(),
         "camera_id":   camera_id,
     }

@@ -142,6 +142,20 @@ def _extract_metadata(result) -> dict:
     return getattr(result, "metadata", {}) or {}
 
 
+def _log_stage_drop(camera_id: str, stage: str, before: int, after: int) -> None:
+    """
+    Observability helper: log once when a pipeline stage reduces the
+    detection count, instead of silently passing on fewer detections than
+    it received. Only fires when count actually drops, so normal frames
+    (no drop) don't spam INFO logs at 20-30 FPS per camera.
+    """
+    if after < before:
+        logger.info(
+            "[stage-drop] camera=%s stage=%s %d -> %d (-%d)",
+            camera_id, stage, before, after, before - after,
+        )
+
+
 def _pool_idx(camera_id: str) -> int:
     """Issue 3 fix: stable pool slot via hashlib.md5 — survives process restarts."""
     return int(hashlib.md5(camera_id.encode()).hexdigest(), 16) % MAX_PREDICTOR_POOL
@@ -730,6 +744,16 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
                 # [Item T] Real availability, not a hardcoded True.
                 "tracker_active":   (person_tracker is not None) or (equipment_tracker is not None),
                 "class_counts":     {},
+                # [Observability] No inference ran this frame (frame-skip),
+                # so the funnel is just "cached count straight through."
+                "stage_counts": {
+                    "infra_raw":      0,
+                    "crack_raw":      0,
+                    "raw_total":      0,
+                    "after_filter":   0,
+                    "after_tracking": 0,
+                    "final":          len(cached),
+                },
                 "ppe_compliance": {"overall": 100.0, "helmet": 100.0, "vest": 100.0, "worker_count": 0},
                 "camera_id":        camera_id,
                 "timestamp":        frame_ts,
@@ -851,6 +875,15 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
 
         raw = infra_raw + crack_raw
 
+        # [Observability] Stage funnel — first checkpoint. Populated on the
+        # happy path only; the except branch below builds its own funnel
+        # below so frame_analytics always carries a consistent shape.
+        stage_counts = {
+            "infra_raw":  len(infra_raw),
+            "crack_raw":  len(crack_raw),
+            "raw_total":  len(raw),
+        }
+
     except Exception as e:
         logger.exception("Pipeline error for camera %s", camera_id)
         return {
@@ -872,6 +905,16 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
                 # may still be alive for the next one.
                 "tracker_active":   (person_tracker is not None) or (equipment_tracker is not None),
                 "class_counts":     {},
+                # [Observability] Stage funnel — prediction itself failed, so
+                # every stage downstream of raw is honestly 0, not omitted.
+                "stage_counts": {
+                    "infra_raw":      0,
+                    "crack_raw":      0,
+                    "raw_total":      0,
+                    "after_filter":   0,
+                    "after_tracking": 0,
+                    "final":          0,
+                },
                 "ppe_compliance": {
                     "overall":      100.0,
                     "helmet":       100.0,
@@ -926,6 +969,10 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     # for the same object at slightly different confidences). NMS keeps only the
     # highest-confidence box when two same-class boxes overlap heavily.
     filtered = _nms(filtered)
+
+    # [Observability] Stage funnel — confidence threshold + NMS checkpoint.
+    stage_counts["after_filter"] = len(filtered)
+    _log_stage_drop(camera_id, "confidence_filter+nms", stage_counts["raw_total"], len(filtered))
     # =====================================
 
     def _canonical(d):
@@ -940,6 +987,11 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
 
     # [Item R] Stage timing checkpoint: tracking starts here (person + equipment).
     _tracking_start = time.time()
+
+    # [Observability] Snapshot pre-tracker person count so a tracker failure
+    # or unexpected filtering is visible in stage_counts instead of just
+    # showing up as "fewer detections than expected" with no explanation.
+    _persons_before_tracking = len(persons)
 
     try:
         if person_tracker is None:
@@ -956,6 +1008,12 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     # [Item R] Only the tracker call itself counts toward "tracking" time —
     # the detection-building loops below are assembly/alerting, not tracking.
     _person_tracking_ms = round((time.time() - _tracking_start) * 1000, 2)
+
+    # [Observability] Stage funnel — person tracker checkpoint. Logged
+    # immediately (not deferred to the final summary) so a tracker that
+    # zeroes out detections is attributable the moment it happens.
+    _log_stage_drop(camera_id, "person_tracker", _persons_before_tracking, len(persons))
+    stage_counts["after_tracking"] = len(persons) + len(non_persons)
 
     detections = []
 
@@ -1599,6 +1657,21 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
     severe_count   = sum(1 for d in crack_dets if d.get("crack_severity") == "severe")
     critical_crack = sum(1 for d in crack_dets if d.get("crack_severity") == "critical")
 
+    # [Observability] Stage funnel — final checkpoint, plus the one log line
+    # that actually answers "where did my detections go": if the model
+    # produced raw detections this frame but the pipeline is about to return
+    # zero, say exactly which stage(s) the count fell off at, in one place,
+    # instead of forcing a search through DEBUG-level stage timing.
+    stage_counts["final"] = len(detections)
+    if stage_counts["raw_total"] > 0 and stage_counts["final"] == 0:
+        logger.info(
+            "[stage-drop] camera=%s frame_id=%s detections reached 0 this frame "
+            "(raw=%d -> filtered=%d -> tracked=%d -> final=0)",
+            camera_id, _frame_counters.get(camera_id, 0),
+            stage_counts["raw_total"], stage_counts["after_filter"],
+            stage_counts["after_tracking"],
+        )
+
     frame_analytics = {
 
         "frame_id":         frame_id,            # [Item Q] per-camera monotonic frame index
@@ -1614,6 +1687,11 @@ def run_safety_pipeline(frame, camera_id=0):   # [R2 #5] camera_id param
             "drawing":   drawing_ms,   # always 0.0 — no rendering happens here
             "total":     total_ms,
         },
+        # [Observability] Per-stage detection-count funnel for this frame.
+        # Lets the dashboard/API show exactly where detections were dropped
+        # (confidence+NMS filtering vs. person tracking) instead of only
+        # exposing the final count. Mirrors stage_timing_ms's shape/placement.
+        "stage_counts":     stage_counts,
         "fps":              fps,
         # [Item T] Reflects real tracker availability instead of a hardcoded True.
         "tracker_active":   (person_tracker is not None) or (equipment_tracker is not None),
