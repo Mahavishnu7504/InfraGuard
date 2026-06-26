@@ -154,6 +154,18 @@ class BasePredictor:
                 f"from {self.model_path}: {exc}"
             ) from exc
 
+        # ---- DEBUG: confirm the right model and classes are loaded --------
+        print()
+        print("MODEL PATH")
+        print(self.model_path)
+        print()
+        try:
+            print("MODEL CLASSES")
+            print(self.model.names)
+            print()
+        except Exception:
+            pass
+
         if self.device == "cuda":
             self.model.to("cuda")
             self.model.fuse()
@@ -235,6 +247,14 @@ class BasePredictor:
                 raise InferenceError(f"Model inference failed: {exc}") from exc
             inference_time = round(time.time() - t0, 4)
 
+            # ---- DEBUG: confirm YOLO actually found boxes ------------------
+            print("=" * 60)
+            print("YOLO RESULTS")
+            print("Images :", len(results))
+            for r in results:
+                print("Boxes  :", len(r.boxes))
+            print("=" * 60)
+
             # ---- Validate results ------------------------------------------
             self._validate_results(results)
 
@@ -248,11 +268,19 @@ class BasePredictor:
                 raise ParsingError(f"Failed to parse results: {exc}") from exc
             parsing_time = round(time.time() - t0, 4)
 
+            # ---- DEBUG: show where detections land after parsing -----------
+            print("=" * 60)
+            print("RAW BOXES :", raw_box_count)
+            print("REJECTED  :", rejected_count)
+            print("RETURNED  :", len(detections))
+            print("=" * 60)
+
         except PredictorError as exc:
             prediction_status = "FAILED"
             error_type = type(exc).__name__
             error_message = str(exc)
-            logger.error(f"{self.MODEL_SOURCE} prediction failed: {error_type}: {error_message}")
+            logger.exception(f"{self.MODEL_SOURCE} prediction failed")
+            raise
 
         self.prediction_count += 1
 
@@ -368,12 +396,9 @@ class BasePredictor:
         self,
         frame
     ):
-
-        return cv2.resize(
-            frame,
-            (self.config.imgsz,
-             self.config.imgsz)
-        )
+        # YOLO resizes internally — do not resize here as it can distort
+        # aspect ratio and cause detections to be dropped.
+        return frame
 
     # -------------------------------------------------
 
@@ -479,12 +504,12 @@ class BasePredictor:
                 logger.warning(f"Skipping detection with out-of-range confidence: {conf}")
                 continue
 
-            if cls not in result.names:
+            try:
+                raw_label = result.names[int(cls)]
+            except Exception as exc:
                 rejected_count += 1
-                logger.warning(f"Skipping detection with unknown class id: {cls}")
+                logger.warning(f"Skipping detection with unknown class id {cls}: {exc}")
                 continue
-
-            raw_label = result.names[cls]
 
             try:
                 label = self.normalize_label(raw_label)
@@ -492,6 +517,13 @@ class BasePredictor:
                 raise NormalizationError(
                     f"Failed to normalize label '{raw_label}': {exc}"
                 ) from exc
+
+            # ---- DEBUG: trace every accepted detection --------------------
+            print()
+            print("RAW LABEL  :", raw_label)
+            print("NORMALIZED :", label)
+            print("CONF       :", conf)
+            print()
 
             detections.append({
 

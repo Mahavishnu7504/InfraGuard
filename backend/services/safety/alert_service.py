@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import time
@@ -242,6 +240,36 @@ class AlertManager:
 
         # Full history (including resolved alerts)
         self._history: List[Alert] = []
+
+    # ------------------------------------------------------------------
+    # Backward Compatibility
+    # ------------------------------------------------------------------
+
+    def should_alert(self, key: str, risk) -> bool:
+        """
+        Compatibility method for older safety_pipeline.py versions.
+
+        The new AlertManager handles alert lifecycle through
+        process_detection(), but older pipeline code still calls
+        should_alert(). This method preserves cooldown behaviour.
+        """
+
+        now = time.time()
+
+        if not hasattr(self, "_legacy_last_alert"):
+            self._legacy_last_alert = {}
+
+        last = self._legacy_last_alert.get(key)
+
+        if last is None:
+            self._legacy_last_alert[key] = now
+            return True
+
+        if (now - last) >= self.cooldown:
+            self._legacy_last_alert[key] = now
+            return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Public API
