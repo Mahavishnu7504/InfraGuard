@@ -67,6 +67,36 @@ def normalize_class_name(raw: str) -> str:
 
 
 # -----------------------------------------------------
+# SHARED CONSTANTS
+# Single source of truth consumed by detection_service.py,
+# violation_analyzer.py, alert_service.py, analytics_service.py,
+# and the React dashboard.
+# -----------------------------------------------------
+
+PPE_VIOLATIONS: Dict[str, str] = {
+    "no_helmet": "HIGH",
+    "no_vest":   "MEDIUM",
+    "no_boots":  "LOW",
+    "no_gloves": "LOW",
+}
+
+PPE_ITEM_NAMES: Dict[str, str] = {
+    "no_helmet": "helmet",
+    "no_vest":   "vest",
+    "no_boots":  "boots",
+    "no_gloves": "gloves",
+}
+
+SEVERITY_ORDER: Dict[str, int] = {
+    "SAFE":     0,
+    "LOW":      1,
+    "MEDIUM":   2,
+    "HIGH":     3,
+    "CRITICAL": 4,
+}
+
+
+# -----------------------------------------------------
 # SITE PROFILES
 # -----------------------------------------------------
 
@@ -114,6 +144,27 @@ MACHINE_DANGER_RADIUS: Dict[str, int] = {
 }
 DEFAULT_DANGER_RADIUS = 300  # fallback for unknown machines
 
+# Intrinsic risk weight per machine type (added to proximity score).
+# Combined with distance-based scoring in detect_danger_zones.
+MACHINE_RISK: Dict[str, int] = {
+    "roller":       20,
+    "loader":       30,
+    "bulldozer":    40,
+    "grader":       40,
+    "dump_truck":   40,
+    "mixer_truck":  40,
+    "excavator":    50,
+    "mobile_crane": 60,
+}
+
+DEFAULT_DANGER_ZONES = [
+    {
+        "name": "Heavy Equipment Zone",
+        "risk": "HIGH",
+        "polygon": [],          # replace with real zone coordinates when available
+        "machine_types": list(SITE_PROFILES["construction"]["machine_classes"]),
+    }
+]
 
 # -----------------------------------------------------
 # Utility Functions
@@ -140,20 +191,102 @@ def euclidean_distance(
 
 
 # -----------------------------------------------------
-# Severity Calculation
+# Phase 1 — Risk Score Engine
+#
+# Replaces the old fixed-rule lookup ("missing helmet -> HIGH") with an
+# additive point system. Every hazard contributes points; the sum maps
+# to a risk level via RISK_BANDS. This makes risk continuous and lets
+# multiple smaller issues combine into something bigger (Combined
+# Hazard Scoring) rather than each hazard being judged in isolation.
 # -----------------------------------------------------
 
-SEVERITY_MAP: Dict[str, Tuple[int, str]] = {
-    "SAFE":   (0,   "Safe"),
-    "LOW":    (25,  "Low"),
-    "MEDIUM": (60,  "Medium"),
-    "HIGH":   (100, "High"),
+# Points contributed by each individual hazard / missing item.
+HAZARD_SCORES: Dict[str, int] = {
+    "missing_helmet":  40,
+    "missing_vest":    30,
+    "missing_boots":   20,
+    "missing_gloves":  10,
+    "danger_zone":      50,
+    "machine_nearby":   30,
+    "crack":            60,
 }
+
+# Risk level bands, evaluated low -> high. Each entry is
+# (inclusive_lower_bound, label). The band whose lower bound is the
+# highest value <= the score wins.
+RISK_BANDS: List[Tuple[int, str]] = [
+    (0,   "SAFE"),
+    (21,  "LOW"),
+    (41,  "MEDIUM"),
+    (71,  "HIGH"),
+    (91,  "CRITICAL"),
+]
+
+# Display label per risk level, used alongside the numeric score.
+SEVERITY_LABELS: Dict[str, str] = {
+    "SAFE":     "Safe",
+    "LOW":      "Low",
+    "MEDIUM":   "Medium",
+    "HIGH":     "High",
+    "CRITICAL": "Critical",
+}
+
+# Legacy map kept for backward compatibility with callers that used
+# (numeric_score, label) tuples. New code should prefer RISK_BANDS.
+SEVERITY_MAP: Dict[str, Tuple[int, str]] = {
+    "SAFE":     (0,   "Safe"),
+    "LOW":      (20,  "Low"),
+    "MEDIUM":   (45,  "Medium"),
+    "HIGH":     (70,  "High"),
+    "CRITICAL": (100, "Critical"),
+}
+
+# Site-wide escalation: number of HIGH-or-above individual workers
+# required to bump the whole-image risk level up to CRITICAL, even if
+# no single worker individually scored as CRITICAL.
+HIGH_WORKER_ESCALATION_THRESHOLD = 3
+
+
+def risk_level_for_score(score: int) -> str:
+    """
+    Map an additive hazard score to a risk level using RISK_BANDS.
+
+    0-20 SAFE, 21-40 LOW, 41-70 MEDIUM, 71-90 HIGH, 91+ CRITICAL.
+    """
+    level = RISK_BANDS[0][1]
+    for lower_bound, label in RISK_BANDS:
+        if score >= lower_bound:
+            level = label
+        else:
+            break
+    return level
 
 
 def compute_severity(risk_level: str) -> Tuple[int, str]:
-    """Convert a risk level string to a numeric score and display label."""
-    return SEVERITY_MAP.get(risk_level, (0, "Safe"))
+    """
+    Convert a risk level string to a representative numeric score
+    (the band's lower bound) and a display label.
+
+    Kept for callers that only have a risk level string on hand
+    (e.g. the crack path, which is always forced to CRITICAL).
+    """
+    for lower_bound, label in RISK_BANDS:
+        if label == risk_level:
+            return lower_bound, SEVERITY_LABELS.get(risk_level, "Safe")
+    return 0, "Safe"
+
+
+def risk_level_rank(risk_level: str) -> int:
+    """Ordinal rank of a risk level, for comparisons (SAFE < LOW < ... < CRITICAL)."""
+    for i, (_, label) in enumerate(RISK_BANDS):
+        if label == risk_level:
+            return i
+    return 0
+
+
+def max_risk_level(*levels: str) -> str:
+    """Return whichever of the given risk levels ranks highest."""
+    return max(levels, key=risk_level_rank) if levels else "SAFE"
 
 
 # -----------------------------------------------------
@@ -314,7 +447,7 @@ def associate_ppe_to_person(
         person_box: List[float],
         detections: List[Dict],
         iou_threshold: float = 0.1
-) -> set:
+) -> Dict[str, bool]:
     """
     Associate PPE items with a person using body-region checks AND IoU.
 
@@ -324,14 +457,17 @@ def associate_ppe_to_person(
       - boots   → must be in bottom 25% AND IoU > threshold
       - gloves  → IoU > (smaller) threshold only
       - other   → IoU > threshold (machines, unknown labels are skipped)
+
+    Returns a dict mapping each tracked PPE item to True/False, e.g.:
+        {"helmet": True, "vest": False, "boots": True, "gloves": False}
     """
-    assigned = set()
+    detected: set = set()
 
     for det in detections:
         label = normalize_class_name(det["class_name"])
 
         # Skip non-PPE labels and persons.
-        if label in ("person",) | MACHINE_CLASSES | {"crack", "no_helmet", "no_vest",
+        if label in {"person"} | MACHINE_CLASSES | {"crack", "no_helmet", "no_vest",
                                                       "head", "unknown"}:
             continue
 
@@ -341,25 +477,67 @@ def associate_ppe_to_person(
         if label in _REGION_MATCHERS:
             region_ok = _REGION_MATCHERS[label](person_box, ppe_box)
             if region_ok and iou > iou_threshold:
-                assigned.add(label)
+                detected.add(label)
         elif label == "gloves":
             if iou > _GLOVE_IOC_THRESHOLD:
-                assigned.add(label)
+                detected.add(label)
         else:
             # Unknown PPE-like label — fall back to IoU only.
             if iou > iou_threshold:
-                assigned.add(label)
+                detected.add(label)
 
-    return assigned
+    # Return a structured dict for all tracked items (enables UI reports
+    # and detailed analytics without callers having to check set membership).
+    return {item: (item in detected) for item in _COMPLIANCE_ITEMS}
 
 
 # -----------------------------------------------------
-# PPE Violation Detection
+# PPE Violation Detection (Phase 1: score-based)
 # -----------------------------------------------------
+
+# The four PPE items tracked for compliance %, each worth an equal
+# 25% share (Worker Compliance Percentage).
+_COMPLIANCE_ITEMS: Tuple[str, ...] = ("helmet", "vest", "boots", "gloves")
+_COMPLIANCE_SHARE = 100 / len(_COMPLIANCE_ITEMS)  # 25% each
+
+
+def compute_worker_compliance(assigned: set) -> Dict:
+    """
+    Return PPE compliance details for a worker.
+
+    Returns a dict:
+        percentage  – 0-100 rounded to nearest integer
+        worn        – number of tracked items present
+        required    – total number of tracked items
+        missing     – list of items not detected
+
+    e.g. helmet + vest present, boots + gloves missing ->
+         {"percentage": 50, "worn": 2, "required": 4, "missing": ["boots", "gloves"]}
+    """
+    worn    = sum(1 for item in _COMPLIANCE_ITEMS if item in assigned)
+    missing = [item for item in _COMPLIANCE_ITEMS if item not in assigned]
+    return {
+        "percentage": round(worn * _COMPLIANCE_SHARE),
+        "worn":       worn,
+        "required":   len(_COMPLIANCE_ITEMS),
+        "missing":    missing,
+    }
+
 
 def detect_ppe_violations(detections: List[Dict]) -> Dict:
     """
-    Evaluate per-person PPE compliance.
+    Evaluate per-person PPE compliance using the additive risk score
+    engine (Phase 1).
+
+    For each worker:
+      - Missing helmet  -> +40
+      - Missing vest    -> +30
+      - Missing boots   -> +20
+      - Missing gloves  -> +10
+      These stack (Combined Hazard Scoring): e.g. missing both helmet
+      and vest contributes 40 + 30 = 70 before any proximity/danger
+      points are added later in evaluate_risk.
+
     class_name may be raw YOLO labels; normalization applied internally.
     """
     persons = [
@@ -367,48 +545,75 @@ def detect_ppe_violations(detections: List[Dict]) -> Dict:
         if normalize_class_name(d["class_name"]) == "person"
     ]
 
-    report     = []
-    image_risk = "LOW"
+    report      = []
+    image_score = 0
 
     for idx, person in enumerate(persons):
-        assigned = associate_ppe_to_person(person["bbox"], detections)
+        assigned_dict = associate_ppe_to_person(person["bbox"], detections)
+        # Convert to set for existing set-arithmetic (missing = required - present)
+        assigned = {item for item, present in assigned_dict.items() if present}
 
         missing_critical  = CRITICAL_PPE  - assigned
         missing_important = IMPORTANT_PPE - assigned
+        missing_all        = sorted(missing_critical | missing_important)
 
         # Fix 10: Structured reason list for UI and debugging.
-        reasons = []
+        reasons     = []
+        person_score = 0
 
-        if missing_critical:
-            risk = "HIGH"
-            for item in sorted(missing_critical):
-                reasons.append(f"Missing critical PPE: {item}")
-        elif missing_important:
-            risk = "MEDIUM"
-            for item in sorted(missing_important):
-                reasons.append(f"Missing important PPE: {item}")
-        else:
-            risk = "LOW"
+        for item in sorted(missing_critical | missing_important):
+            hazard_key = f"missing_{item}"
+            points = HAZARD_SCORES.get(hazard_key, 0)
+            person_score += points
+            reasons.append(f"Missing {item.capitalize()} (+{points})")
+
+        if not reasons:
             reasons.append("All required PPE detected")
 
-        if risk == "HIGH":
-            image_risk = "HIGH"
-        elif risk == "MEDIUM" and image_risk != "HIGH":
-            image_risk = "MEDIUM"
+        # Multiple-PPE escalation: 3 or more missing items -> +20 bonus.
+        if len(missing_all) >= 3:
+            person_score += 20
+            reasons.append("Multiple PPE violations (+20)")
+
+        risk       = risk_level_for_score(person_score)
+        compliance = compute_worker_compliance(assigned)
+
+        image_score = max(image_score, person_score)
 
         report.append({
-            "person_id":    idx,
-            "risk":         risk,
-            "missing":      sorted(missing_critical | missing_important),
-            "assigned_ppe": sorted(assigned),
-            "reasons":      reasons,
+            "person_id":         idx,
+            "risk":              risk,
+            "risk_score":        person_score,
+            "compliance_pct":    compliance["percentage"],
+            "compliance":        compliance,
+            "missing":           missing_all,
+            "assigned_ppe":      assigned_dict,          # full dict: {"helmet": True, ...}
+            "assigned_ppe_list": sorted(assigned),       # backward-compat list
+            "reasons":           reasons,
             # Keep single-string reason for backward compatibility.
-            "reason":       "; ".join(reasons),
+            "reason":            "; ".join(reasons),
         })
 
+    # ── Multiple Worker Escalation ──────────────────────────────────────
+    # Site-wide risk isn't just "the worst single worker" — if enough
+    # workers are independently at HIGH risk or above, the whole image
+    # escalates to CRITICAL even though no individual worker may have
+    # scored that high on their own.
+    high_or_above_count = sum(
+        1 for p in report if risk_level_rank(p["risk"]) >= risk_level_rank("HIGH")
+    )
+
+    image_risk = risk_level_for_score(image_score)
+    if high_or_above_count >= HIGH_WORKER_ESCALATION_THRESHOLD:
+        image_risk = "CRITICAL"
+    elif high_or_above_count >= 1:
+        image_risk = max_risk_level(image_risk, "HIGH")
+
     return {
-        "image_risk": image_risk,
-        "persons":    report,
+        "image_risk":          image_risk,
+        "image_score":         image_score,
+        "high_worker_count":   high_or_above_count,
+        "persons":             report,
     }
 
 
@@ -463,8 +668,10 @@ def detect_vehicle_proximity(
                     "type":     "worker_near_machine",
                     "machine":  machine_label,
                     "distance": int(distance),
-                    # Fix 10: reason string for UI.
-                    "reason":   f"Worker is {int(distance)}px from {machine_label}",
+                    "reason":   (
+                        f"Worker is {int(distance)}px from {machine_label} "
+                        f"(proximity threshold: {threshold}px)"
+                    ),
                 })
 
     return violations
@@ -495,6 +702,14 @@ def _adaptive_danger_radius(machine_label: str, machine_box: List[float]) -> int
 def detect_danger_zones(detections: List[Dict]) -> List[Dict]:
     """
     Flag workers inside the adaptive danger radius of any machine.
+
+    Proximity tiers (Change 10):
+      distance < 50 px              -> CRITICAL
+      distance < radius             -> HIGH
+      distance < radius + 40        -> MEDIUM
+
+    Machine intrinsic severity (MACHINE_RISK) is included in the alert
+    so downstream services can weight it further.
     """
     persons  = [
         d for d in detections
@@ -511,23 +726,42 @@ def detect_danger_zones(detections: List[Dict]) -> List[Dict]:
         machine_label = normalize_class_name(machine["class_name"])
         mc            = bbox_center(machine["bbox"])
         radius        = _adaptive_danger_radius(machine_label, machine["bbox"])
+        machine_sev   = MACHINE_RISK.get(machine_label, 30)
 
         for person in persons:
             pc       = bbox_center(person["bbox"])
             distance = euclidean_distance(pc, mc)
 
-            if distance < radius:
-                alerts.append({
-                    "type":           "danger_zone",
-                    "machine":        machine_label,
-                    "distance":       int(distance),
-                    "danger_radius":  radius,
-                    # Fix 10: reason string for UI.
-                    "reason":         (
-                        f"Worker is {int(distance)}px from {machine_label} "
-                        f"(danger zone: {radius}px)"
-                    ),
-                })
+            if distance < 50:
+                tier = "CRITICAL"
+                reason = (
+                    f"Worker entered {machine_label} safety radius "
+                    f"({int(distance)}px — immediate danger)"
+                )
+            elif distance < radius:
+                tier = "HIGH"
+                reason = (
+                    f"Worker inside {machine_label} danger zone "
+                    f"({int(distance)}px / radius {radius}px)"
+                )
+            elif distance < radius + 40:
+                tier = "MEDIUM"
+                reason = (
+                    f"Worker approaching {machine_label} danger zone "
+                    f"({int(distance)}px / radius {radius}px)"
+                )
+            else:
+                continue
+
+            alerts.append({
+                "type":           "danger_zone",
+                "machine":        machine_label,
+                "machine_risk":   machine_sev,
+                "distance":       int(distance),
+                "danger_radius":  radius,
+                "tier":           tier,
+                "reason":         reason,
+            })
 
     return alerts
 
@@ -540,22 +774,35 @@ def _build_crack_result(cracks: List[Dict]) -> Dict:
     """
     Build the risk result dict for a frame containing structural cracks.
     PPE and proximity checks are skipped entirely.
+
+    Each crack contributes its hazard score (+60); multiple cracks
+    stack additively, same as any other hazard (Combined Hazard
+    Scoring), so e.g. 2 cracks = 120 -> CRITICAL.
     """
+    crack_points = HAZARD_SCORES.get("crack", 60)
+    score = len(cracks) * crack_points
+
     reasons = [
-        f"Structural crack detected (bbox: {c['bbox']})" for c in cracks
+        f"Structural crack detected (+{crack_points}) (bbox: {c['bbox']})"
+        for c in cracks
     ]
-    risk_score, severity_label = compute_severity("HIGH")
+    risk_level = risk_level_for_score(score)
+    _, severity_label = compute_severity(risk_level)
 
     return {
-        "risk_level":   "HIGH",
-        "risk_score":   risk_score,
+        # ── Unified contract ───────────────────────────────────────────────
+        "detections":   cracks,   # only crack detections in this path
+        "workers":      [],
+        # ── Core risk output ───────────────────────────────────────────────
+        "risk_level":   risk_level,
+        "risk_score":   score,
         "severity":     severity_label,
         "crack":        True,
         "crack_count":  len(cracks),
         # Fix 10: reasons list.
         "reasons":      reasons,
         "reason":       "; ".join(reasons),
-        "ppe":          {"image_risk": "HIGH", "persons": []},
+        "ppe":          {"image_risk": risk_level, "image_score": score, "persons": []},
         "proximity":    [],
         "danger_zones": [],
     }
@@ -570,15 +817,20 @@ def evaluate_risk(
         confidence_threshold: float = 0.3
 ) -> Dict:
     """
-    Full risk evaluation pipeline.
+    Full risk evaluation pipeline (Phase 1: additive risk score engine).
 
     Evaluation order (Fix 6):
       1. Validate all detections (Fix 9).
-      2. Check for structural cracks → if found, return HIGH immediately (Fix 5).
-      3. PPE compliance check (Fix 1–4).
-      4. Worker–machine proximity check.
-      5. Danger zone check with adaptive radius (Fix 7–8).
-      6. Combine results with structured reasons (Fix 10).
+      2. Check for structural cracks -> if found, score them directly
+         and return CRITICAL/whatever band they land in (Fix 5).
+      3. PPE compliance check, scored per missing item (Fix 1-4).
+      4. Worker-machine proximity check (+30 per nearby machine).
+      5. Danger zone check with adaptive radius (+50 per zone) (Fix 7-8).
+      6. Combine hazards per worker additively (Combined Hazard
+         Scoring) — e.g. missing helmet (+40) + danger zone (+50) +
+         machine nearby (+30) = 120 -> CRITICAL for that worker.
+      7. Escalate site-wide risk if multiple workers are independently
+         HIGH or above (Multiple Worker Escalation).
 
     Args:
         detections:           Raw YOLO detections. Each must have
@@ -610,14 +862,96 @@ def evaluate_risk(
     proximity = detect_vehicle_proximity(valid_detections)
     danger    = detect_danger_zones(valid_detections)
 
-    risk_level = ppe["image_risk"]
+    machine_nearby_points = HAZARD_SCORES.get("machine_nearby", 30)
+    danger_zone_points    = HAZARD_SCORES.get("danger_zone", 50)
 
-    if danger:
-        risk_level = "HIGH"
-    elif proximity and risk_level != "HIGH":
-        risk_level = "MEDIUM"
+    # ── Combined Hazard Scoring ─────────────────────────────────────────────
+    # Add each worker's own proximity/danger-zone hits on top of their
+    # PPE score, so e.g. "Helmet Missing + Danger Zone + Machine Nearby"
+    # stacks into one combined per-worker score instead of three
+    # separately-judged events.
+    #
+    # detect_vehicle_proximity / detect_danger_zones don't currently
+    # tag which person they belong to, so we recompute per-person
+    # counts here using the same distance logic, keyed by person index
+    # in ppe["persons"] order (same iteration order as detect_ppe_violations).
+    persons = [
+        d for d in valid_detections
+        if normalize_class_name(d["class_name"]) == "person"
+    ]
+    machines = [
+        d for d in valid_detections
+        if normalize_class_name(d["class_name"]) in MACHINE_CLASSES
+    ]
 
-    risk_score, severity_label = compute_severity(risk_level)
+    for idx, person_entry in enumerate(ppe["persons"]):
+        person_box = persons[idx]["bbox"]
+        pc = bbox_center(person_box)
+
+        nearby_count = 0
+        in_danger_zone = False
+
+        for machine in machines:
+            machine_label = normalize_class_name(machine["class_name"])
+            mc       = bbox_center(machine["bbox"])
+            distance = euclidean_distance(pc, mc)
+
+            if distance < 300:  # matches detect_vehicle_proximity default
+                nearby_count += 1
+
+            radius = _adaptive_danger_radius(machine_label, machine["bbox"])
+            if distance < radius:
+                in_danger_zone = True
+
+        if nearby_count:
+            added = nearby_count * machine_nearby_points
+            person_entry["risk_score"] += added
+            person_entry["reasons"].append(
+                f"Machine nearby x{nearby_count} (+{added})"
+            )
+        if in_danger_zone:
+            person_entry["risk_score"] += danger_zone_points
+            person_entry["reasons"].append(
+                f"In machine danger zone (+{danger_zone_points})"
+            )
+
+        person_entry["reason"] = "; ".join(person_entry["reasons"])
+        person_entry["risk"] = risk_level_for_score(person_entry["risk_score"])
+
+    # ── Re-derive site-wide risk now that combined scores are in ───────────
+    if ppe["persons"]:
+        image_score = max(p["risk_score"] for p in ppe["persons"])
+    else:
+        image_score = 0
+        # No detected persons, but danger/proximity may still exist
+        # site-wide (e.g. machine alone in frame) — fold those in too.
+        if danger:
+            image_score = max(image_score, danger_zone_points)
+        elif proximity:
+            image_score = max(image_score, machine_nearby_points)
+
+    high_or_above_count = sum(
+        1 for p in ppe["persons"]
+        if risk_level_rank(p["risk"]) >= risk_level_rank("HIGH")
+    )
+
+    # Image-level escalation: multiple independently unsafe workers make
+    # the whole scene more dangerous than any single worker score implies.
+    if high_or_above_count >= HIGH_WORKER_ESCALATION_THRESHOLD:
+        image_score += 30
+
+    risk_level = risk_level_for_score(image_score)
+    if high_or_above_count >= HIGH_WORKER_ESCALATION_THRESHOLD:
+        risk_level = "CRITICAL"
+    elif high_or_above_count >= 1:
+        risk_level = max_risk_level(risk_level, "HIGH")
+
+    ppe["image_risk"]        = risk_level
+    ppe["image_score"]       = image_score
+    ppe["high_worker_count"] = high_or_above_count
+
+    risk_score = image_score
+    _, severity_label = compute_severity(risk_level)
 
     # ── Fix 10: Collect all reasons for top-level explanation ──────────────
     top_reasons: List[str] = []
@@ -631,10 +965,19 @@ def evaluate_risk(
     for zone in danger:
         top_reasons.append(zone.get("reason", ""))
 
+    if high_or_above_count >= HIGH_WORKER_ESCALATION_THRESHOLD:
+        top_reasons.append(
+            f"Escalated to CRITICAL: {high_or_above_count} workers at HIGH risk or above"
+        )
+
     if not top_reasons:
         top_reasons = ["No violations detected"]
 
     return {
+        # ── Unified contract expected by detection_service.py ──────────────
+        "detections":     valid_detections,
+        "workers":        ppe.get("persons", []),
+        # ── Core risk output ───────────────────────────────────────────────
         "risk_level":     risk_level,
         "risk_score":     risk_score,
         "severity":       severity_label,

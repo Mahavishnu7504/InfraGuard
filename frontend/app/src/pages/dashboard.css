@@ -295,6 +295,161 @@
   gap: 22px;
 }
 
+/* SIDE COLUMN (stacked panels: telemetry / risk / cameras) */
+.db__side {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* SKELETON LOADING */
+.db__skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg1);
+  border: 1px solid var(--border);
+}
+
+.db__skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg,
+      transparent 30%,
+      rgba(0, 200, 255, 0.06) 50%,
+      transparent 70%);
+  background-size: 200% 100%;
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-sweep {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* RISK DISTRIBUTION */
+.db__risk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.db__risk-row-top {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  color: var(--tx1);
+  margin-bottom: 6px;
+}
+
+.db__risk-bar-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.db__risk-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+/* CAMERA STATUS GRID */
+.db__cam-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.db__cam-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: var(--tx0);
+}
+
+.db__cam-state {
+  margin-left: auto;
+  color: var(--tx2);
+  text-transform: uppercase;
+  font-size: 0.56rem;
+  letter-spacing: 0.08em;
+}
+
+/* WORKER COMPLIANCE GRID */
+.db__worker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.db__worker-card {
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ic, var(--tx3));
+  transition: background 0.18s, transform 0.18s;
+}
+
+.db__worker-card:hover {
+  background: rgba(255, 255, 255, 0.04);
+  transform: translateY(-2px);
+}
+
+.db__worker-card-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.db__worker-name {
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--tx0);
+}
+
+.db__worker-compliance {
+  margin-bottom: 4px;
+}
+
+.db__worker-compliance-top {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  color: var(--tx1);
+  margin-bottom: 6px;
+}
+
+.db__worker-compliance-top span:last-child {
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .db__worker-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* PANEL */
 .db__panel {
   background: var(--bg1);
@@ -337,7 +492,8 @@
 .db__incident {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 14px;
   padding: 14px 16px;
   border-radius: var(--r-lg);
   background: rgba(255, 255, 255, 0.025);
@@ -349,6 +505,10 @@
 .db__incident:hover {
   background: rgba(255, 255, 255, 0.04);
   transform: translateX(4px);
+}
+
+.db__incident--critical {
+  --ic: var(--r);
 }
 
 .db__incident--high {
@@ -365,13 +525,14 @@
 
 .db__incident-left {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
 }
 
 .db__incident-dot {
   width: 8px;
   height: 8px;
+  margin-top: 6px;
   border-radius: 50%;
   background: var(--ic, var(--tx2));
   box-shadow: 0 0 6px var(--ic, transparent);
@@ -391,6 +552,102 @@
   font-size: 0.6rem;
   color: var(--tx2);
   letter-spacing: 0.04em;
+}
+
+/* incident reason / missing-PPE tags (also reused by worker cards) */
+.db__incident-reason {
+  margin-top: 10px;
+}
+
+.db__incident-reason-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.56rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tx2);
+  margin-bottom: 6px;
+}
+
+.db__incident-reason-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.db__ppe-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.db__ppe-tag svg {
+  font-size: 0.66rem;
+}
+
+.db__ppe-tag--missing {
+  color: var(--r);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+/* danger zone flag */
+.db__incident-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--r);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  animation: danger-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes danger-pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* right-side stack: risk badge above score */
+.db__incident-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.db__incident-score {
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.db__incident-score-max {
+  font-size: 0.62rem;
+  font-weight: 400;
+  color: var(--tx2);
 }
 
 .db__incident-risk {
@@ -470,6 +727,10 @@
 
   .db__hdr {
     flex-direction: column;
+  }
+
+  .db__cam-grid {
+    grid-template-columns: 1fr;
   }
 }
 

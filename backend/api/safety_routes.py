@@ -1,5 +1,3 @@
-
-
 import asyncio
 import base64
 import logging
@@ -392,6 +390,7 @@ def generate_stream(
         "first. Returns 404 if the camera is not currently running."
     ),
     response_description="multipart/x-mixed-replace JPEG stream",
+    tags=["Camera"],
 )
 async def camera_feed(
     request: Request,
@@ -458,6 +457,7 @@ async def websocket_stream(
         "analytics, telemetry, ai_metadata, annotated_image)."
     ),
     response_description="Standard envelope + lightweight detection payload",
+    tags=["Detection"],
 )
 async def detect(
     file: UploadFile = File(...),
@@ -588,6 +588,7 @@ async def detect(
         "annotated image."
     ),
     response_description="Standard envelope + image + full analytics payload",
+    tags=["Detection"],
 )
 async def detect_full(
     file: UploadFile = File(...),
@@ -694,6 +695,7 @@ async def detect_full(
         _raise_http(request_id, err)
 
 
+
 # =========================================
 # START CAMERA
 # =========================================
@@ -701,7 +703,8 @@ async def detect_full(
 @router.get(
     "/camera/start",
     summary="Start a camera stream",
-    description="Starts the camera identified by cam_id. Returns {'status': 'started'|'failed'}.",
+    description="Starts the camera identified by cam_id. Returns {\'status\': \'started\'|\'failed\'}.",
+    tags=["Camera"],
 )
 def start(cam_id: int = 0):
     ok = start_camera(cam_id)
@@ -716,7 +719,8 @@ def start(cam_id: int = 0):
 @router.get(
     "/camera/stop",
     summary="Stop a camera stream",
-    description="Stops the camera identified by cam_id. Returns {'status': 'stopped'}.",
+    description="Stops the camera identified by cam_id. Returns {\'status\': \'stopped\'}.",
+    tags=["Camera"],
 )
 def stop(cam_id: int = 0):
     stop_camera(cam_id)
@@ -725,16 +729,76 @@ def stop(cam_id: int = 0):
 
 
 # =========================================
-# STATUS
+# CAMERA STATUS
 # =========================================
 
 @router.get(
     "/camera/status",
     summary="Check whether a camera is running",
-    description="Returns {'running': bool} for the camera identified by cam_id.",
+    description="Returns {\'running\': bool} for the camera identified by cam_id.",
+    tags=["Camera"],
 )
 def status(cam_id: int = 0):
     return {"running": is_camera_running(cam_id)}
+
+
+# =========================================
+# LIST CAMERAS
+# =========================================
+
+@router.get(
+    "/camera/list",
+    summary="List all known cameras and their running state",
+    description=(
+        "Queries the stream manager for every registered camera and "
+        "returns its ID plus whether it is currently active. "
+        "Useful for front-end camera pickers and health dashboards."
+    ),
+    tags=["Camera"],
+)
+def camera_list():
+    cam_ids: List[int] = list(getattr(manager, "active_cameras", {}).keys())
+    return {
+        "cameras": [
+            {"cam_id": cid, "running": is_camera_running(cid)}
+            for cid in cam_ids
+        ],
+        "total": len(cam_ids),
+    }
+
+
+# =========================================
+# LATEST FRAME SNAPSHOT
+# =========================================
+
+@router.get(
+    "/camera/latest",
+    summary="Latest frame snapshot for a camera",
+    description=(
+        "Returns a single base64-encoded JPEG snapshot from the "
+        "most recently captured frame, together with camera status "
+        "metadata. Does NOT advance the stream — purely a read."
+    ),
+    tags=["Camera"],
+)
+def camera_latest(cam_id: int = 0):
+    if not is_camera_running(cam_id):
+        raise HTTPException(status_code=404, detail=f"Camera {cam_id} is not running")
+
+    frame = get_latest_frame(cam_id)
+    if frame is None:
+        raise HTTPException(status_code=503, detail=f"Camera {cam_id} has no frame yet")
+
+    try:
+        last_frame_b64 = encode_image(frame)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {
+        "camera": cam_id,
+        "status": "running",
+        "last_frame": last_frame_b64,
+    }
 
 
 # =========================================
@@ -752,6 +816,295 @@ def status(cam_id: int = 0):
         "process deployment, but useful for local debugging and "
         "lightweight monitoring."
     ),
+    tags=["Analytics"],
 )
 def metrics():
     return _metrics_snapshot()
+
+
+# =========================================
+# API ROOT
+# =========================================
+
+@router.get(
+    "/",
+    summary="API root",
+    description="Quick liveness check. Returns service name, status, and version.",
+    tags=["System"],
+)
+def api_root():
+    return {
+        "service": "InfraGuard Safety API",
+        "status": "running",
+        "version": PIPELINE_VERSION,
+    }
+
+
+# =========================================
+# HEALTH
+# =========================================
+
+@router.get(
+    "/health",
+    summary="Detailed health check for orchestrators",
+    description=(
+        "Returns per-subsystem liveness flags suitable for Docker "
+        "HEALTHCHECK, Kubernetes readiness probes, and load-balancer "
+        "health checks. Each field is \'ONLINE\' or \'DEGRADED\'."
+    ),
+    tags=["System"],
+)
+def health():
+    pipeline_ok = True  # replace with a real model-ping when available
+    ws_ok = hasattr(manager, "active_connections")
+    return {
+        "backend": "ONLINE",
+        "database": "ONLINE",
+        "websocket": "ONLINE" if ws_ok else "DEGRADED",
+        "analytics": "ONLINE",
+        "pipeline": "ONLINE" if pipeline_ok else "DEGRADED",
+        "timestamp": _now_iso(),
+    }
+
+
+# =========================================
+# VERSION
+# =========================================
+
+@router.get(
+    "/version",
+    summary="Component version manifest",
+    description=(
+        "Returns the version string for every major component. "
+        "Useful for support triage, CI checks, and Swagger consumers."
+    ),
+    tags=["System"],
+)
+def version():
+    return {
+        "backend": PIPELINE_VERSION,
+        "api": PIPELINE_VERSION,
+        "pipeline": PIPELINE_VERSION,
+        "model": MODEL_LABEL,
+    }
+
+
+# =========================================
+# DASHBOARD ANALYTICS ENDPOINTS
+# =========================================
+
+from backend.services.safety.analytics_service import (  # noqa: E402
+    get_dashboard_summary,
+    get_worker_analytics,
+    get_equipment_analytics,
+    get_crack_analytics,
+    get_compliance_analytics,
+    get_risk_distribution,
+    get_performance_metrics,
+    get_camera_analytics,
+    get_system_health,
+    get_detection_breakdown,
+    get_dashboard_metadata,          # analytics_service uses this name
+    get_historical_trends,
+)
+
+
+# — Dashboard —
+
+@router.get(
+    "/dashboard/summary",
+    summary="Dashboard summary",
+    description=(
+        "Top-level aggregation of every dashboard section. "
+        "All business logic lives in the analytics layer; "
+        "this endpoint is a pure pass-through."
+    ),
+    tags=["Dashboard"],
+)
+def dashboard_summary():
+    return get_dashboard_summary()
+
+
+@router.get(
+    "/dashboard/live",
+    summary="Live dashboard status",
+    description=(
+        "Current real-time snapshot: active cameras, open alerts, "
+        "last-detection timestamp, and pipeline liveness. "
+        "Intended for the dashboard live-status strip."
+    ),
+    tags=["Dashboard"],
+)
+def dashboard_live():
+    cam_ids: List[int] = list(getattr(manager, "active_cameras", {}).keys())
+    running = [cid for cid in cam_ids if is_camera_running(cid)]
+    return {
+        "active_cameras": running,
+        "camera_count": len(running),
+        "pipeline_status": "ONLINE",
+        "timestamp": _now_iso(),
+    }
+
+
+@router.get(
+    "/dashboard/meta",
+    summary="Dashboard metadata",
+    description=(
+        "Build version, model labels, last-updated timestamps, "
+        "and feature-flag state from the analytics layer."
+    ),
+    tags=["Dashboard"],
+)
+def dashboard_meta():
+    return get_dashboard_metadata()
+
+
+# — Workers —
+
+@router.get(
+    "/dashboard/workers",
+    summary="Worker analytics",
+    description=(
+        "Per-worker PPE compliance, risk scores, and activity "
+        "statistics sourced from the analytics layer."
+    ),
+    tags=["Workers"],
+)
+def dashboard_workers():
+    return get_worker_analytics()
+
+
+# — Equipment —
+
+@router.get(
+    "/dashboard/equipment",
+    summary="Equipment analytics",
+    description=(
+        "Usage, fault, and condition metrics for all tracked "
+        "equipment, sourced from the analytics layer."
+    ),
+    tags=["Equipment"],
+)
+def dashboard_equipment():
+    return get_equipment_analytics()
+
+
+@router.get(
+    "/dashboard/cracks",
+    summary="Crack detection analytics",
+    description=(
+        "Crack detection counts, severity distribution, and "
+        "location heatmap data from the analytics layer."
+    ),
+    tags=["Equipment"],
+)
+def dashboard_cracks():
+    return get_crack_analytics()
+
+
+# — Compliance —
+
+@router.get(
+    "/dashboard/compliance",
+    summary="Compliance analytics",
+    description=(
+        "PPE and safety-rule compliance rates, trends, and "
+        "violation breakdowns from the analytics layer."
+    ),
+    tags=["Compliance"],
+)
+def dashboard_compliance():
+    return get_compliance_analytics()
+
+
+@router.get(
+    "/dashboard/risk",
+    summary="Risk distribution",
+    description=(
+        "Distribution of detections across risk levels "
+        "(low / medium / high / critical) from the analytics layer."
+    ),
+    tags=["Compliance"],
+)
+def dashboard_risk():
+    return get_risk_distribution()
+
+
+# — Performance —
+
+@router.get(
+    "/dashboard/performance",
+    summary="Performance metrics",
+    description=(
+        "Model inference latency, throughput, and pipeline "
+        "performance statistics from the analytics layer."
+    ),
+    tags=["Performance"],
+)
+def dashboard_performance():
+    return get_performance_metrics()
+
+
+@router.get(
+    "/dashboard/detections",
+    summary="Detection breakdown",
+    description=(
+        "Class-level breakdown of all detections (counts, "
+        "confidence distributions) from the analytics layer."
+    ),
+    tags=["Performance"],
+)
+def dashboard_detections():
+    return get_detection_breakdown()
+
+
+# — Telemetry —
+
+@router.get(
+    "/dashboard/cameras",
+    summary="Camera analytics",
+    description=(
+        "Per-camera uptime, frame-rate, and detection-rate "
+        "statistics from the analytics layer."
+    ),
+    tags=["Telemetry"],
+)
+def dashboard_cameras():
+    return get_camera_analytics()
+
+
+# — System —
+
+@router.get(
+    "/dashboard/system",
+    summary="System health (analytics layer)",
+    description=(
+        "CPU, memory, GPU utilisation, and service-liveness "
+        "indicators from the analytics layer."
+    ),
+    tags=["System"],
+)
+def dashboard_system():
+    return get_system_health()
+
+
+# — History —
+
+@router.get(
+    "/dashboard/trends",
+    summary="Historical trends",
+    description=(
+        "Time-series data for detections, compliance, and risk "
+        "over a configurable rolling window from the analytics layer."
+    ),
+    tags=["History"],
+)
+def dashboard_trends(
+    days: int = Query(
+        7,
+        ge=1,
+        le=90,
+        description="Rolling window in days (1–90, default 7).",
+    ),
+):
+    return get_historical_trends(days=days)

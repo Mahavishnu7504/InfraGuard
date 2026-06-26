@@ -16,6 +16,15 @@ from dataclasses import dataclass, field, asdict
 
 from ai_engine.pipelines.safety_pipeline import run_safety_pipeline
 
+from backend.services.safety.risk_engine.rules import (
+    evaluate_risk,
+    compute_severity,
+    detect_ppe_violations,
+    detect_vehicle_proximity,
+    detect_danger_zones,
+)
+import backend.services.safety.risk_engine.rules as rules
+
 # ---- Optional: swap in your real EnterpriseTracker ----
 try:
     from ai_engine.tracker import EnterpriseTracker as _ET
@@ -28,6 +37,10 @@ except ImportError:
 # =========================================================
 # CONFIGURATION
 # =========================================================
+
+# Persistent tracking ID counter for the stub tracker (increments across frames
+# so IDs never reset even when EnterpriseTracker is unavailable).
+_tracking_counter: int = 0
 
 MIN_CONFIDENCE: float = 0.35   # detections below this are rejected (logged, not silent)
 
@@ -42,7 +55,7 @@ CANONICAL_CLASSES = {
     "person", "helmet", "vest", "boots", "gloves",
     "no_helmet", "no_vest", "no_gloves", "no_boots",
     "crack",
-    "excavator", "loader", "bulldozer", "roller", "grader", "crane",
+    "excavator", "loader", "bulldozer", "roller", "grader", "mobile_crane",
 }
 
 # =========================================================
@@ -90,51 +103,35 @@ LABEL_MAP: Dict[str, str] = {
     "Roller":       "roller",
     "grader":       "grader",
     "Grader":       "grader",
-    "crane":        "crane",
-    "Crane":        "crane",
+    "crane":        "mobile_crane",
+    "Crane":        "mobile_crane",
 }
 
-EQUIPMENT_CLASSES = {"excavator", "loader", "bulldozer", "roller", "grader", "crane"}
+EQUIPMENT_CLASSES = {"excavator", "loader", "bulldozer", "roller", "grader", "mobile_crane"}
 
-# How close (px, bbox-center to bbox-center) a piece of gear/equipment must be
-# to a person before it is considered "theirs" / "nearby" for narrative reasoning.
-PPE_LINK_RADIUS_PX:       float = 180.0
-EQUIPMENT_PROXIMITY_PX:   float = 260.0
+# How close (px, bbox-center to bbox-center) equipment must be to a person
+# before it is considered "nearby" for *narrative* reasoning text only.
+# (The PPE-chain proximity radius used for *risk* decisions lives in rules.py.)
+EQUIPMENT_PROXIMITY_PX: float = 260.0
 
 # =========================================================
 # DANGER ZONES
 # =========================================================
+# Single source of truth for zone geometry/severity lives in rules.py.
+# detection_service.py reads it for rendering (draw_danger_zones) and for
+# including in the returned payload — it never decides zone risk itself.
 
-DANGER_ZONES = [
-    {
-        "name":    "CRANE ZONE",
-        "risk":    "CRITICAL",
-        "polygon": [[820, 180], [1180, 180], [1240, 520], [780, 520]]
-    },
-    {
-        "name":    "MACHINE AREA",
-        "risk":    "HIGH",
-        "polygon": [[120, 420], [420, 420], [420, 690], [120, 690]]
-    }
-]
+DANGER_ZONES = rules.DEFAULT_DANGER_ZONES
 
 # =========================================================
 # PPE INTELLIGENCE
 # =========================================================
+# PPE_VIOLATIONS / PPE_ITEM_NAMES are risk-engine inputs, owned by rules.py.
+# detection_service.py only re-uses them for narrative text and analytics
+# grouping — it never assigns risk from them directly.
 
-PPE_VIOLATIONS: Dict[str, str] = {
-    "no_helmet": "HIGH",
-    "no_vest":   "MEDIUM",
-    "no_gloves": "LOW"
-}
-
-# Maps a missing-PPE class → the friendly item name used in narrative sentences
-PPE_ITEM_NAMES: Dict[str, str] = {
-    "no_helmet": "helmet",
-    "no_vest":   "vest",
-    "no_gloves": "gloves",
-    "no_boots":  "boots",
-}
+PPE_VIOLATIONS: Dict[str, str] = rules.PPE_VIOLATIONS
+PPE_ITEM_NAMES: Dict[str, str] = rules.PPE_ITEM_NAMES
 
 # Required PPE set used for "worker detected, but X missing" inference
 REQUIRED_PPE: Dict[str, str] = {
@@ -149,26 +146,26 @@ REQUIRED_PPE: Dict[str, str] = {
 # These are intentionally short, declarative, and report-ready.
 
 EQUIPMENT_REASONING_TEMPLATES: Dict[str, str] = {
-    "excavator": "Excavator operating near workers.",
-    "loader":    "Loader operating near workers.",
-    "bulldozer": "Bulldozer operating near workers.",
-    "roller":    "Roller operating near workers.",
-    "grader":    "Grader operating near workers.",
-    "crane":     "Crane operating near workers.",
+    "excavator":    "Excavator operating near workers.",
+    "loader":       "Loader operating near workers.",
+    "bulldozer":    "Bulldozer operating near workers.",
+    "roller":       "Roller operating near workers.",
+    "grader":       "Grader operating near workers.",
+    "mobile_crane": "Mobile crane operating near workers.",
 }
 
 EQUIPMENT_REASONING_ISOLATED: Dict[str, str] = {
-    "excavator": "Excavator active on site.",
-    "loader":    "Loader active on site.",
-    "bulldozer": "Bulldozer active on site.",
-    "roller":    "Roller active on site.",
-    "grader":    "Grader active on site.",
-    "crane":     "Crane active on site.",
+    "excavator":    "Excavator active on site.",
+    "loader":       "Loader active on site.",
+    "bulldozer":    "Bulldozer active on site.",
+    "roller":       "Roller active on site.",
+    "grader":       "Grader active on site.",
+    "mobile_crane": "Mobile crane active on site.",
 }
 
 CRACK_REASONING: str = "Structural crack detected. Inspection recommended."
 
-PPE_OK_REASONING:  str = "Worker detected. All required PPE present. Low risk."
+PPE_OK_REASONING:  str = "Worker detected wearing all mandatory PPE. No immediate safety violations identified."
 PPE_MISSING_TEMPLATE: str = "Worker detected. Missing {items}. {risk_label} risk."
 
 # =========================================================
@@ -182,14 +179,16 @@ RISK_SCORES: Dict[str, int] = {
     "low":      20
 }
 
-SEVERITY_ORDER: Dict[str, int] = {
-    "LOW":      0,
-    "MEDIUM":   1,
-    "HIGH":     2,
-    "CRITICAL": 3
+SEVERITY_ORDER = {
+    "SAFE": 0,
+    "LOW": 1,
+    "MEDIUM": 2,
+    "HIGH": 3,
+    "CRITICAL": 4,
 }
 
 RISK_COLORS: Dict[str, tuple] = {
+    "safe":     (0,   255, 0),
     "critical": (0,   0,   255),
     "high":     (0,   80,  255),
     "medium":   (0,   215, 255),
@@ -251,13 +250,13 @@ class Detection:
     age:            int           = 0
     frames_tracked: int           = 0
 
-    # --- Risk classification (set by classify_risk) ---
+    # --- Risk classification (decided by rules.py, never by this module) ---
     risk:             str = "LOW"
     incident_type:    str = "Operational Observation"
     priority:         int = 1
     confidence_level: str = "Low"
 
-    # --- Zone intelligence (set by analyze_intrusions) ---
+    # --- Zone intelligence (decided by rules.py, never by this module) ---
     danger_zone:    bool          = False
     zone_name:      Optional[str] = None
     zone_level:     Optional[str] = None
@@ -292,10 +291,15 @@ def process_frame(frame, camera_id: str = "") -> Dict[str, Any]:
           ↓  validate_detections  — validate bbox / confidence / class / source / timestamp
           ↓  normalize_labels     — map raw output → list[Detection]
           ↓  run_tracker          — assign tracking_id + trajectory
-          ↓  classify_risk        — PPE / crack / person risk tagging
-          ↓  analyze_intrusions   — danger-zone alerts
-          ↓  build_reasoning      — Enterprise Intelligence: turns labels into narrative
-                                    findings ("Worker detected → Helmet missing → High Risk",
+          ↓  tag_confidence_level — model-quality tier from confidence (not risk)
+          ↓  rules.evaluate_risk  — THE ONLY place risk is decided (PPE / crack /
+                                    equipment / person baseline, PPE-chain escalation,
+                                    danger-zone intrusion). Returns risk-tagged
+                                    detections + zone alerts. detection_service.py
+                                    never assigns det.risk itself past this point.
+          ↓  build_reasoning      — Enterprise Intelligence: turns labels + the risk
+                                    rules.py already decided into narrative findings
+                                    ("Worker detected → Helmet missing → High Risk",
                                     "Excavator operating near workers.",
                                     "Structural crack detected. Inspection recommended.")
           ↓  calculate_analytics  — aggregate risk score + findings/summary/compliance/
@@ -346,19 +350,33 @@ def process_frame(frame, camera_id: str = "") -> Dict[str, Any]:
 
         tracked_count = len(detections)
 
-        # ── Stage 4: Risk classification ────────────────────────────────────
+        # ── Stage 3.5: Confidence tiering (not a risk decision) ──────────────
         ts = time.perf_counter()
-        detections = classify_risk(detections)
+        detections = tag_confidence_level(detections)
+        ts = _tick("confidence_ms", ts)
+
+        # ── Stage 4: Risk evaluation (rules.py is the only risk authority) ───
+        ts = time.perf_counter()
+        risk_result = rules.evaluate_risk([d.to_dict() for d in detections])
+        alerts = risk_result.get("danger_zones", [])
+        # map risk information back into detections
+        for det in detections:
+            for rd in risk_result.get("detections", []):
+                if rd.get("id") == det.id:
+                    det.risk = rd.get("risk", det.risk)
+                    det.incident_type = rd.get("incident_type", det.incident_type)
+                    det.priority = rd.get("priority", det.priority)
+                    det.danger_zone = rd.get("danger_zone", det.danger_zone)
+                    det.zone_name = rd.get("zone_name", det.zone_name)
+                    det.zone_level = rd.get("zone_level", det.zone_level)
+                    det.risk_decision_trace = rd.get("risk_decision_trace", det.risk_decision_trace)
+                    det.audit_trail.append("risk_classified")
+                    break
         ts = _tick("risk_ms", ts)
 
         risk_count = len(detections)
 
-        # ── Stage 5: Danger zones ───────────────────────────────────────────
-        ts = time.perf_counter()
-        alerts = analyze_intrusions(detections)
-        ts = _tick("zone_ms", ts)
-
-        # ── Stage 5.5: Reasoning ────────────────────────────────────────────
+        # ── Stage 5: Reasoning ──────────────────────────────────────────────
         ts = time.perf_counter()
         detections = build_reasoning(detections)
         ts = _tick("reasoning_ms", ts)
@@ -422,7 +440,7 @@ def process_frame(frame, camera_id: str = "") -> Dict[str, Any]:
             "frame":       None,   # caller injects encoded frame bytes if needed
             "detections":  [d.to_dict() for d in detections],
             "alerts":      alerts,
-            "zones":       DANGER_ZONES,
+            "zones":       DANGER_ZONES if DANGER_ZONES else [],
             "analytics":   analytics,
             "telemetry":   {
                 "processing_ms":    processing_ms,
@@ -695,10 +713,12 @@ def run_tracker(detections: List[Detection]) -> List[Detection]:
         except Exception:
             pass   # fall through to stub on any tracker error
 
-    # --- Stub ---
-    for i, det in enumerate(detections):
+    # --- Stub: assign persistent IDs that don't reset between frames ---
+    global _tracking_counter
+    for det in detections:
         if det.tracking_id is None:
-            det.tracking_id = i
+            _tracking_counter += 1
+            det.tracking_id = _tracking_counter
 
     for det in detections:
         det.audit_trail.append("tracked")
@@ -707,52 +727,17 @@ def run_tracker(detections: List[Detection]) -> List[Detection]:
 
 
 # =========================================================
-# STAGE 4 — RISK CLASSIFICATION
+# STAGE 4 — CONFIDENCE TIERING
 # =========================================================
+# NOTE: This is NOT risk evaluation. confidence_level is a model-quality
+# label ("Verified" / "Good" / "Low" etc.) derived purely from det.confidence.
+# All risk/incident_type/priority decisions live in rules.evaluate_risk().
 
-def classify_risk(detections: List[Detection]) -> List[Detection]:
-    """
-    Tag each detection with risk, incident_type, priority, and confidence_level.
-    PPE violations are evaluated first; no rule may downgrade an already-higher risk.
-    Populates det.risk_decision_trace with a human-readable explanation of the decision.
-    """
+def tag_confidence_level(detections: List[Detection]) -> List[Detection]:
+    """Populate det.confidence_level from det.confidence. Never touches risk."""
     for det in detections:
-        label = det.class_name.lower()
-
-        # --- PPE violations ---
-        if label in PPE_VIOLATIONS:
-            new_risk = PPE_VIOLATIONS[label]
-            if SEVERITY_ORDER.get(new_risk, 0) >= SEVERITY_ORDER.get(det.risk, 0):
-                det.risk = new_risk
-                det.risk_decision_trace.append(
-                    f"PPE Rule → {label} → {new_risk} risk"
-                )
-            det.priority      = max(det.priority, 3)
-            det.incident_type = "PPE Non-Compliance"
-
-        # --- Infrastructure cracks — never downgrade a PPE classification ---
-        elif label == "crack":
-            if SEVERITY_ORDER.get(det.risk, 0) < SEVERITY_ORDER["MEDIUM"]:
-                det.risk = "MEDIUM"
-                det.risk_decision_trace.append("Crack Rule → Structural crack → MEDIUM risk")
-            det.priority      = max(det.priority, 2)
-            det.incident_type = "Infrastructure Degradation"
-
-        # --- Equipment ---
-        elif label in EQUIPMENT_CLASSES:
-            det.incident_type = "Equipment Activity"
-            det.priority      = max(det.priority, 1)
-            det.risk_decision_trace.append(f"Equipment Rule → {label} → baseline LOW risk")
-
-        # --- Person ---
-        elif label == "person":
-            det.incident_type = "Personnel Activity"
-            det.risk_decision_trace.append("Person Rule → personnel detected → baseline LOW risk")
-
-        # --- Confidence tier ---
         det.confidence_level = _confidence_tier(det.confidence)
-        det.audit_trail.append("risk_classified")
-
+        det.audit_trail.append("confidence_tagged")
     return detections
 
 
@@ -764,72 +749,7 @@ def _confidence_tier(conf: float) -> str:
 
 
 # =========================================================
-# STAGE 5 — DANGER ZONE INTELLIGENCE
-# =========================================================
-
-def analyze_intrusions(detections: List[Detection]) -> List[Dict[str, Any]]:
-    """
-    Check each person-class detection against every danger zone.
-    Zones are evaluated highest-risk first; only the first match wins.
-    Mutates det.risk / det.danger_zone / det.zone_name / det.zone_level /
-            det.priority / det.distance_to_zone / det.event_type in-place.
-    Returns a list of alert dicts for the HUD and result payload.
-    """
-    alerts: List[Dict[str, Any]] = []
-
-    sorted_zones = sorted(
-        DANGER_ZONES,
-        key=lambda z: SEVERITY_ORDER.get(z["risk"], 0),
-        reverse=True
-    )
-
-    for det in detections:
-        if "person" not in det.class_name.lower():
-            continue
-        if len(det.bbox) != 4:
-            continue
-
-        x1, y1, x2, y2 = det.bbox
-        cx = int((x1 + x2) / 2)
-        cy = int((y1 + y2) / 2)
-
-        for zone in sorted_zones:
-            pts = np.array(zone["polygon"], dtype=np.int32)
-            dist = cv2.pointPolygonTest(pts, (float(cx), float(cy)), True)  # signed distance
-
-            inside = dist >= 0
-
-            if inside:
-                det.risk             = zone["risk"]
-                det.danger_zone      = True
-                det.zone_name        = zone["name"]
-                det.zone_level       = zone["risk"]
-                det.distance_to_zone = 0.0
-                det.priority         = 5
-                det.event_type       = "DangerZone"
-                det.audit_trail.append(f"danger_zone:{zone['name']}")
-                det.risk_decision_trace.append(
-                    f"Danger Zone Rule → inside {zone['name']} → {zone['risk']} risk"
-                )
-
-                alerts.append({
-                    "zone":     zone["name"],
-                    "severity": zone["risk"],
-                    "center":   [cx, cy],
-                })
-                break
-
-            else:
-                # Track closest zone for analytics even if not inside
-                abs_dist = abs(dist)
-                if det.distance_to_zone < 0 or abs_dist < det.distance_to_zone:
-                    det.distance_to_zone = round(abs_dist, 1)
-
-    return alerts
-
-
-# =========================================================
-# STAGE 5.5 — ENTERPRISE INTELLIGENCE / REASONING ENGINE
+# STAGE 5 — ENTERPRISE INTELLIGENCE / REASONING ENGINE
 # =========================================================
 #
 # This is the layer that turns bare labels into operational language:
@@ -840,9 +760,11 @@ def analyze_intrusions(detections: List[Detection]) -> List[Dict[str, Any]]:
 #   "Excavator"               → "Excavator operating near workers."
 #   "Crack"                   → "Structural crack detected. Inspection recommended."
 #
-# It never changes risk/priority (that already happened in classify_risk /
-# analyze_intrusions) — it only attaches the human-readable `reasoning`
-# string, plus `missing_ppe` / `nearby_equipment` context, to each Detection.
+# It never decides risk/priority/incident_type — those were already decided
+# by rules.evaluate_risk() upstream. This stage only READS det.risk and
+# det.danger_zone to phrase a sentence; it attaches the human-readable
+# `reasoning` string, plus `missing_ppe` / `nearby_equipment` context, to
+# each Detection.
 
 def build_reasoning(detections: List[Detection]) -> List[Detection]:
     """
@@ -908,16 +830,20 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
 
         # --- Person: associate PPE using bbox containment + IoU, then fall back
         #     to proximity for violation classes not overlapping the worker bbox.
+        #     Uses rules.py's own association helper so narrative linking and
+        #     risk-decision linking can never disagree about whose PPE is missing.
         #
-        #     Priority order:
-        #       1. PPE bbox is contained within the worker bbox  (strongest signal)
-        #       2. IoU between PPE and worker bbox > 0           (partial overlap)
-        #       3. Centre-distance within PPE_LINK_RADIUS_PX     (legacy fallback)
-        #
-        #     This prevents a helmet belonging to Worker A from being assigned to
-        #     adjacent Worker B simply because B's centre is closer. ---
+        #     This stage only READS det.risk (already decided by
+        #     rules.evaluate_risk's PPE-chain rule) — it never assigns it. ---
         if label == "person":
-            linked_violations = _associate_ppe_to_worker(det, violations)
+            linked_ppe = rules.associate_ppe_to_person(
+                det.bbox,
+                [v.to_dict() for v in violations]
+            )
+            linked_violations = [
+                v for v in violations
+                if any(lp.get("id") == v.id for lp in linked_ppe)
+            ]
             missing = sorted({
                 PPE_ITEM_NAMES.get(v.class_name, v.class_name)
                 for v in linked_violations
@@ -929,22 +855,9 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
             ]
 
             if missing:
-                worst = max(
-                    (v.class_name for v in linked_violations),
-                    key=lambda c: SEVERITY_ORDER.get(PPE_VIOLATIONS.get(c, "LOW"), 0)
-                )
-                risk_label = PPE_VIOLATIONS.get(worst, "LOW").title()
+                risk_label = det.risk.title()
                 items_str  = ", ".join(missing)
                 det.reasoning = PPE_MISSING_TEMPLATE.format(items=items_str, risk_label=risk_label)
-
-                escalated_risk = PPE_VIOLATIONS.get(worst, "LOW")
-                if SEVERITY_ORDER.get(escalated_risk, 0) >= SEVERITY_ORDER.get(det.risk, 0):
-                    det.risk = escalated_risk
-                    det.risk_decision_trace.append(
-                        f"PPE Chain Rule → missing {items_str} → escalated to {escalated_risk} risk"
-                    )
-                det.priority      = max(det.priority, 3)
-                det.incident_type = "PPE Non-Compliance"
             else:
                 det.reasoning = PPE_OK_REASONING
 
@@ -959,93 +872,11 @@ def build_reasoning(detections: List[Detection]) -> List[Detection]:
     return detections
 
 
-# ── PPE–Worker association helpers ────────────────────────────────────────────
-
-def _bbox_iou(a: List, b: List) -> float:
-    """Compute Intersection-over-Union between two [x1,y1,x2,y2] bboxes."""
-    if len(a) != 4 or len(b) != 4:
-        return 0.0
-    ix1 = max(a[0], b[0])
-    iy1 = max(a[1], b[1])
-    ix2 = min(a[2], b[2])
-    iy2 = min(a[3], b[3])
-    iw  = max(0.0, ix2 - ix1)
-    ih  = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter == 0:
-        return 0.0
-    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
-    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
-    union  = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
-
-
-def _bbox_contained(inner: List, outer: List, threshold: float = 0.6) -> bool:
-    """
-    Return True if at least `threshold` fraction of `inner` lies inside `outer`.
-    A threshold of 0.6 means 60 % of the PPE bbox must overlap the worker bbox.
-    """
-    if len(inner) != 4 or len(outer) != 4:
-        return False
-    ix1 = max(inner[0], outer[0])
-    iy1 = max(inner[1], outer[1])
-    ix2 = min(inner[2], outer[2])
-    iy2 = min(inner[3], outer[3])
-    iw  = max(0.0, ix2 - ix1)
-    ih  = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    area_inner = max(0.0, inner[2] - inner[0]) * max(0.0, inner[3] - inner[1])
-    if area_inner == 0:
-        return False
-    return (inter / area_inner) >= threshold
-
-
-def _associate_ppe_to_worker(
-    worker: "Detection",
-    violations: List["Detection"],
-) -> List["Detection"]:
-    """
-    Return the violation detections that belong to `worker` using a
-    three-tier association strategy:
-
-    Tier 1 — Containment : PPE bbox ≥60 % inside the worker bbox.
-    Tier 2 — IoU         : IoU > 0 between PPE and worker bbox.
-    Tier 3 — Proximity   : centre-to-centre distance ≤ PPE_LINK_RADIUS_PX
-                           (legacy fallback; used only when the above fail).
-
-    The first tier that returns at least one match wins for that violation.
-    This prevents a helmet/boots from one worker being assigned to a neighbour
-    whose centre happens to be closer.
-    """
-    if len(worker.bbox) != 4:
-        return []
-
-    linked: List["Detection"] = []
-    for viol in violations:
-        if len(viol.bbox) != 4:
-            continue
-
-        # Tier 1: containment
-        if _bbox_contained(viol.bbox, worker.bbox):
-            linked.append(viol)
-            continue
-
-        # Tier 2: IoU overlap
-        if _bbox_iou(viol.bbox, worker.bbox) > 0:
-            linked.append(viol)
-            continue
-
-        # Tier 3: proximity fallback
-        a_center = _bbox_center(worker)
-        v_center = _bbox_center(viol)
-        if a_center and v_center:
-            dx = a_center[0] - v_center[0]
-            dy = a_center[1] - v_center[1]
-            if math.hypot(dx, dy) <= PPE_LINK_RADIUS_PX:
-                linked.append(viol)
-
-    return linked
-
+# ── Equipment/worker proximity helpers (narrative-only, not risk decisions) ──
+# NOTE: PPE-to-worker association (_associate_ppe_to_worker, bbox IoU/containment)
+# now lives exclusively in rules.py — build_reasoning calls rules._associate_ppe_to_worker
+# directly so the narrative layer and the risk-decision layer can never disagree
+# about which PPE detection belongs to which worker.
 
 def _bbox_center(det: Detection) -> Optional[tuple]:
     if len(det.bbox) != 4:
@@ -1081,7 +912,7 @@ def _nearby(anchor: Detection, candidates: List[Detection], radius_px: float) ->
 def calculate_analytics(detections: List[Detection], alerts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     alerts = alerts or []
     score   = 0
-    highest = "LOW"
+    highest = "SAFE"
 
     workers        = 0
     helmet_count   = 0
@@ -1095,7 +926,9 @@ def calculate_analytics(detections: List[Detection], alerts: Optional[List[Dict[
 
     for det in detections:
         risk = det.risk.upper()
-        score += RISK_SCORES.get(risk.lower(), 10)
+        det_score = RISK_SCORES.get(risk.lower(), 10)
+        if det_score > score:
+            score = det_score          # base = highest single-detection score
         if SEVERITY_ORDER.get(risk, 0) > SEVERITY_ORDER.get(highest, 0):
             highest = risk
 
@@ -1109,6 +942,15 @@ def calculate_analytics(detections: List[Detection], alerts: Optional[List[Dict[
         elif cn == "crack":         crack_count    += 1
         if cn in PPE_VIOLATIONS:    ppe_violations += 1
         if det.danger_zone:         danger_zone_count += 1
+
+    # Apply multi-hazard penalties on top of the highest base score
+    if ppe_violations > 0:
+        score = min(score + ppe_violations * 5, 100)
+    if danger_zone_count > 0:
+        score = min(score + danger_zone_count * 10, 100)
+    if crack_count > 0:
+        score = min(score + crack_count * 3, 100)
+    score = min(score, 100)
 
     ppe_compliance = (
         round((1 - ppe_violations / max(workers, 1)) * 100, 1)
@@ -1207,6 +1049,9 @@ def calculate_analytics(detections: List[Detection], alerts: Optional[List[Dict[
 
         # New: class distribution for dashboards and debugging
         "class_distribution": class_distribution,
+
+        # Convenience alias for charts — mirrors statistics.risk_breakdown
+        "risk_distribution":  statistics.get("risk_breakdown", {}),
     }
 
 
@@ -1229,12 +1074,14 @@ def generate_findings(detections: List[Detection], alerts: List[Dict[str, Any]])
             continue
 
         findings.append({
-            "id":         det.id,
-            "class_name": det.class_name,
-            "event_type": det.event_type,
-            "risk":       det.risk,
+            "id":          det.id,
+            "class_name":  det.class_name,
+            "event_type":  det.event_type,
+            "risk":        det.risk,
+            "priority":    det.priority,
+            "confidence":  det.confidence,
             "tracking_id": det.tracking_id,
-            "finding":    det.reasoning,
+            "finding":     det.reasoning,
         })
 
     # Sort: critical findings first
@@ -1332,7 +1179,7 @@ def generate_compliance(detections: List[Detection], workers: int, ppe_violation
 def generate_statistics(detections: List[Detection], workers: int, equipment_count: int,
                          crack_count: int, ppe_violations: int, danger_zone_count: int,
                          overall_risk: str) -> Dict[str, Any]:
-    risk_breakdown = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    risk_breakdown = {"SAFE": 0, "LOW": 0, "MEDIUM": 0, "HIGH": 0, "CRITICAL": 0}
     for det in detections:
         risk_breakdown[det.risk.upper()] = risk_breakdown.get(det.risk.upper(), 0) + 1
 
@@ -1421,7 +1268,20 @@ def generate_summary(workers: int, equipment_count: int, crack_count: int,
     if danger_zone_count > 0:
         parts.append(f"{danger_zone_count} danger-zone intrusion{'s' if danger_zone_count != 1 else ''} recorded.")
 
-    parts.append(f"Overall site risk: {overall_risk.title()}.")
+    # Determine the primary cause for the risk level
+    if overall_risk.upper() in ("HIGH", "CRITICAL"):
+        if danger_zone_count > 0:
+            cause = " due to danger-zone intrusion"
+        elif ppe_violations > 0:
+            cause = " due to PPE non-compliance"
+        elif crack_count > 0:
+            cause = " due to structural defects"
+        else:
+            cause = ""
+    else:
+        cause = ""
+
+    parts.append(f"Overall site risk: {overall_risk.title()}{cause}.")
 
     return " ".join(parts)
 
@@ -1448,12 +1308,19 @@ def draw_danger_zones(frame, intrusion_alerts: List[Dict]):
     pulse = abs(math.sin(time.time() * 3))
 
     for zone in DANGER_ZONES:
+        polygon = zone.get("polygon")
+        if not polygon or len(polygon) < 3:
+            continue
+
+        pts = np.asarray(polygon, dtype=np.int32)
+        if pts.ndim != 2 or pts.shape[1] != 2:
+            continue
+
         intrusion = any(a["zone"] == zone["name"] for a in intrusion_alerts)
         color     = (0, 0, 255) if intrusion else (255, 120, 0)
         alpha     = (0.12 + 0.10 * pulse) if intrusion else (0.04 + 0.04 * pulse)
 
         overlay = frame.copy()
-        pts     = np.array(zone["polygon"], np.int32)
         cv2.fillPoly(overlay, [pts], color)
         frame[:] = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
         cv2.polylines(frame, [pts], True, color, 3)
@@ -1520,25 +1387,35 @@ def draw_trajectories(frame, detections: List[Detection]):
 def draw_hud(frame, detections: List[Detection], intrusion_alerts: List[Dict], analytics: Dict):
     h, w = frame.shape[:2]
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, 52), (10, 15, 25), -1)
+    cv2.rectangle(overlay, (0, 0), (w, 76), (10, 15, 25), -1)
     frame[:] = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
 
+    # Row 1 — title
     cv2.putText(
         frame, "InfraGuard Enterprise AI Surveillance",
         (18, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2
     )
+    # Row 1 — per-category counts (right side)
     cv2.putText(
-        frame, f"Objects: {len(detections)}",
+        frame, f"Workers: {analytics.get('workers', 0)}",
         (w - 260, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 120), 2
     )
     cv2.putText(
+        frame, f"Equip: {analytics.get('equipment_count', 0)}",
+        (w - 420, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 180, 255), 2
+    )
+    cv2.putText(
+        frame, f"Cracks: {analytics.get('crack_count', 0)}",
+        (w - 570, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 215, 255), 2
+    )
+    # Row 2 — risk and PPE compliance
+    cv2.putText(
         frame, f"Risk: {analytics.get('overall_risk', 'N/A')}",
-        (w - 460, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 80, 255), 2
+        (w - 260, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 80, 255), 2
     )
     cv2.putText(
         frame, f"PPE: {analytics.get('ppe_compliance', 100.0):.0f}%",
-        (w - 620, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 215, 255), 2
+        (w - 420, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 215, 255), 2
     )
 
     if intrusion_alerts:
@@ -1592,7 +1469,7 @@ def _empty(camera_id: str = "") -> Dict[str, Any]:
             "workers": 0, "helmet_count": 0, "vest_count": 0,
             "boots_count": 0, "gloves_count": 0, "equipment_count": 0,
             "crack_count": 0, "ppe_violations": 0, "ppe_compliance": 100.0,
-            "danger_zone_count": 0, "risk_score": 0, "overall_risk": "LOW",
+            "danger_zone_count": 0, "risk_score": 0, "overall_risk": "SAFE",
             "ppe_summary": {
                 "helmet": "Missing",
                 "vest": "Missing",
@@ -1604,7 +1481,7 @@ def _empty(camera_id: str = "") -> Dict[str, Any]:
 
             # Enterprise Intelligence narrative layer
             "findings":     [],
-            "summary":      "No personnel detected in frame. Overall site risk: Low.",
+            "summary":      "No personnel detected in frame. Overall site risk: Safe.",
             "compliance": {
                 "status":             "Compliant",
                 "ppe_compliance_pct": 100.0,
@@ -1624,8 +1501,8 @@ def _empty(camera_id: str = "") -> Dict[str, Any]:
                 "structural_cracks": 0,
                 "ppe_violations":    0,
                 "danger_zone_events": 0,
-                "overall_risk":      "LOW",
-                "risk_breakdown":    {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
+                "overall_risk":      "SAFE",
+                "risk_breakdown":    {"SAFE": 0, "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
                 "average_confidence":  0.0,
                 "max_confidence":      0.0,
                 "min_confidence":      0.0,

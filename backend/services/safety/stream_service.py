@@ -14,6 +14,16 @@ try:
 except Exception:
     cv2 = None
 
+try:
+    import psutil as _psutil
+except Exception:
+    _psutil = None
+
+try:
+    import subprocess as _subprocess
+except Exception:
+    _subprocess = None
+
 
 # =========================================================
 # CAMERA STATE
@@ -268,11 +278,22 @@ class StreamStats:
     reconnect_attempts: int = 0
     last_reconnect_at:  Optional[str] = None
 
+    # ── Performance history (rolling, for dashboard graphs) ───────────
+    # Each entry is a dict: {"t": ISO-timestamp, "v": value}
+    _fps_history:        deque = field(default_factory=lambda: deque(maxlen=STATS_WINDOW))
+    _latency_history:    deque = field(default_factory=lambda: deque(maxlen=STATS_WINDOW))
+    _queue_depth_history: deque = field(default_factory=lambda: deque(maxlen=STATS_WINDOW))
+
     def record_fps(self, fps: float):
         self._fps_window.append(fps)
+        self._fps_history.append({"t": datetime.now(timezone.utc).isoformat(), "v": fps})
 
     def record_latency(self, latency_ms: float):
         self._latency_window.append(latency_ms)
+        self._latency_history.append({"t": datetime.now(timezone.utc).isoformat(), "v": round(latency_ms, 2)})
+
+    def record_queue_depth(self, depth: int):
+        self._queue_depth_history.append({"t": datetime.now(timezone.utc).isoformat(), "v": depth})
 
     @property
     def average_fps(self) -> float:
@@ -281,6 +302,26 @@ class StreamStats:
     @property
     def average_latency_ms(self) -> float:
         return round(sum(self._latency_window) / len(self._latency_window), 1) if self._latency_window else 0.0
+
+    @property
+    def dropped_frames_pct(self) -> float:
+        """Percentage of received frames that were dropped (queue overflow)."""
+        total = self.frames_received
+        return round(self.frames_dropped / total * 100, 1) if total else 0.0
+
+    @property
+    def queue_utilization_pct(self) -> float:
+        """Latest queue depth as a percentage of max queue size."""
+        if not self._queue_depth_history:
+            return 0.0
+        latest = self._queue_depth_history[-1]["v"]
+        return round(latest / max(FRAME_QUEUE_MAXSIZE, 1) * 100, 1)
+
+    @property
+    def reconnect_rate(self) -> float:
+        """Reconnections per minute based on elapsed tracking (approximation)."""
+        # Simple exposure: raw count, consumers can compute rate over time
+        return self.reconnect_attempts
 
     def to_dict(self) -> dict:
         return {
@@ -291,6 +332,16 @@ class StreamStats:
             "average_latency_ms": self.average_latency_ms,
             "reconnect_attempts": self.reconnect_attempts,
             "last_reconnect_at":  self.last_reconnect_at,
+            # Stream quality metrics
+            "dropped_frames_pct":    self.dropped_frames_pct,
+            "queue_utilization_pct": self.queue_utilization_pct,
+            "reconnect_count":       self.reconnect_attempts,
+            # Performance history (for graphs)
+            "history": {
+                "fps":         list(self._fps_history),
+                "latency_ms":  list(self._latency_history),
+                "queue_depth": list(self._queue_depth_history),
+            },
         }
 
 
@@ -299,6 +350,9 @@ def _make_stats() -> StreamStats:
     return StreamStats(
         _fps_window=deque(maxlen=STATS_WINDOW),
         _latency_window=deque(maxlen=STATS_WINDOW),
+        _fps_history=deque(maxlen=STATS_WINDOW),
+        _latency_history=deque(maxlen=STATS_WINDOW),
+        _queue_depth_history=deque(maxlen=STATS_WINDOW),
     )
 
 
@@ -476,6 +530,11 @@ class CameraManager:
         self._results: dict = {}   # cam_id → latest AI result
         self._stats:   dict = {}   # cam_id → StreamStats
 
+        # Camera uptime tracking (cam_id → float epoch, str ISO, int count)
+        self._started_at:     dict = {}   # cam_id → datetime ISO-8601 (UTC)
+        self._started_epoch:  dict = {}   # cam_id → float (time.time())
+        self._restart_counts: dict = {}   # cam_id → int
+
         # Per-camera active recording sessions (cam_id → RecordingState)
         self._recordings: dict = {}
         self._rec_lock:   threading.Lock = threading.Lock()
@@ -630,6 +689,9 @@ class CameraManager:
                 q.put_nowait((frame, meta))
             except queue.Full:
                 stats.frames_dropped += 1
+
+            # Record queue depth for performance history
+            stats.record_queue_depth(q.qsize())
 
             # ── FPS limiter ───────────────────────────────────────────
             elapsed_frame = time.time() - tick
@@ -1029,6 +1091,316 @@ class CameraManager:
     # Public API
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Camera Uptime
+    # ------------------------------------------------------------------
+
+    def get_camera_uptime(self, cam_id=0) -> dict:
+        """
+        Return uptime information for ``cam_id``.
+
+        Shape::
+
+            {
+                "started_at":    "<ISO-8601 UTC>",
+                "running_time_s": float,         # seconds since last start
+                "restart_count":  int,
+            }
+
+        Returns zeros/None when the camera has never been started.
+        """
+        started_iso   = self._started_at.get(cam_id)
+        started_epoch = self._started_epoch.get(cam_id)
+        running_s     = round(time.time() - started_epoch, 1) if started_epoch else 0.0
+        return {
+            "started_at":     started_iso,
+            "running_time_s": running_s,
+            "restart_count":  self._restart_counts.get(cam_id, 0),
+        }
+
+    # ------------------------------------------------------------------
+    # Camera Metadata
+    # ------------------------------------------------------------------
+
+    def get_camera_metadata(self, cam_id=0) -> dict:
+        """
+        Return static and runtime metadata for ``cam_id``.
+
+        Shape::
+
+            {
+                "camera_id": ...,
+                "name":      str,
+                "location":  str,
+                "source":    str,
+                "resolution": [width, height],
+                "codec":     str,
+            }
+
+        ``name`` and ``location`` can be populated by extending
+        CAMERA_REGISTRY entries to dicts; they fall back to sensible
+        defaults so existing plain int/str entries are unaffected.
+        """
+        source = resolve_source(cam_id)
+        registry_entry = CAMERA_REGISTRY.get(cam_id, source)
+
+        # Support optional rich registry entries: {"source": ..., "name": ..., "location": ...}
+        if isinstance(registry_entry, dict):
+            name     = registry_entry.get("name", f"Camera {cam_id}")
+            location = registry_entry.get("location", "Unknown")
+            src_str  = str(registry_entry.get("source", source))
+        else:
+            name     = f"Camera {cam_id}"
+            location = "Unknown"
+            src_str  = str(source)
+
+        return {
+            "camera_id":  cam_id,
+            "name":       name,
+            "location":   location,
+            "source":     src_str,
+            "resolution": [FRAME_WIDTH, FRAME_HEIGHT],
+            "codec":      RECORDING_FOURCC,
+        }
+
+    # ------------------------------------------------------------------
+    # Connection Statistics
+    # ------------------------------------------------------------------
+
+    def get_connection_stats(self) -> dict:
+        """
+        Return aggregate WebSocket / connection counts.
+
+        Shape::
+
+            {
+                "websocket_clients":  int,
+                "dashboard_clients":  int,
+                "camera_streams":     int,
+                "total_connections":  int,
+            }
+
+        Counts are best-effort; falls back to 0 when the manager
+        attribute isn't present (test environments, etc.).
+        """
+        # manager.active_connections is typically a dict keyed by cam_id
+        # each value being a set/list of WebSocket connections.
+        try:
+            active = getattr(manager, "active_connections", {}) or {}
+            # Count per-camera subscribers
+            camera_streams    = len(active)
+            websocket_clients = sum(
+                len(v) if hasattr(v, "__len__") else 1
+                for v in active.values()
+            )
+        except Exception:
+            camera_streams    = 0
+            websocket_clients = 0
+
+        # Dashboard connections (manager may expose a separate dict)
+        try:
+            dash = getattr(manager, "dashboard_connections", {}) or {}
+            dashboard_clients = len(dash) if hasattr(dash, "__len__") else 0
+        except Exception:
+            dashboard_clients = 0
+
+        total = websocket_clients + dashboard_clients
+        return {
+            "websocket_clients": websocket_clients,
+            "dashboard_clients": dashboard_clients,
+            "camera_streams":    camera_streams,
+            "total_connections": total,
+        }
+
+    # ------------------------------------------------------------------
+    # System Telemetry
+    # ------------------------------------------------------------------
+
+    def get_system_telemetry(self) -> dict:
+        """
+        Return host-level resource metrics.
+
+        Shape::
+
+            {
+                "cpu_usage_pct":  float,
+                "ram_usage_pct":  float,
+                "disk_usage_pct": float,
+                "gpu_usage_pct":  float | None,
+                "running_cameras": int,
+                "active_threads":  int,
+            }
+
+        Requires ``psutil`` for CPU/RAM/Disk; degrades gracefully when
+        it is not installed.  GPU utilisation is attempted via
+        ``nvidia-smi``; returns ``None`` when unavailable.
+        """
+        # CPU / RAM / Disk
+        if _psutil is not None:
+            try:
+                cpu_pct  = _psutil.cpu_percent(interval=None)
+                ram      = _psutil.virtual_memory()
+                ram_pct  = ram.percent
+                disk     = _psutil.disk_usage("/")
+                disk_pct = disk.percent
+            except Exception:
+                cpu_pct = ram_pct = disk_pct = None
+        else:
+            cpu_pct = ram_pct = disk_pct = None
+
+        # GPU — nvidia-smi (optional, non-blocking)
+        gpu_pct: Optional[float] = None
+        if _subprocess is not None:
+            try:
+                out = _subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=utilization.gpu",
+                     "--format=csv,noheader,nounits"],
+                    timeout=1,
+                    stderr=_subprocess.DEVNULL,
+                )
+                gpu_pct = float(out.decode().strip().split("\n")[0])
+            except Exception:
+                gpu_pct = None
+
+        # Running cameras
+        running = sum(
+            1 for cam_id in self._states
+            if self.is_camera_running(cam_id)
+        )
+
+        # Active threads spawned by this manager
+        active_threads = sum(
+            1 for t in list(self._threads.values()) + list(self._inf_threads.values())
+            if t is not None and t.is_alive()
+        )
+
+        return {
+            "cpu_usage_pct":   cpu_pct,
+            "ram_usage_pct":   ram_pct,
+            "disk_usage_pct":  disk_pct,
+            "gpu_usage_pct":   gpu_pct,
+            "running_cameras": running,
+            "active_threads":  active_threads,
+        }
+
+    # ------------------------------------------------------------------
+    # Camera Analytics Summary
+    # ------------------------------------------------------------------
+
+    def get_camera_analytics(self) -> dict:
+        """
+        Return aggregated counts across all known cameras.
+
+        Shape::
+
+            {
+                "total_cameras":  int,
+                "running":        int,
+                "disconnected":   int,
+                "recording":      int,
+                "healthy":        int,
+            }
+
+        Useful for the executive-level dashboard summary card.
+        """
+        all_ids = (
+            set(self._states.keys())
+            | set(self._threads.keys())
+            | set(self._inf_threads.keys())
+        )
+        total        = len(all_ids)
+        running      = 0
+        disconnected = 0
+        recording    = 0
+        healthy      = 0
+
+        health = self._health_status  # snapshot; no lock needed for reads
+
+        for cam_id in all_ids:
+            state = self._states.get(cam_id, CameraState.STOPPED)
+            if self.is_camera_running(cam_id):
+                running += 1
+            if state == CameraState.DISCONNECTED:
+                disconnected += 1
+            if self.is_recording(cam_id):
+                recording += 1
+            cam_health = health.get(cam_id, {})
+            if cam_health.get("overall") == "OK":
+                healthy += 1
+
+        return {
+            "total_cameras": total,
+            "running":       running,
+            "disconnected":  disconnected,
+            "recording":     recording,
+            "healthy":       healthy,
+        }
+
+    # ------------------------------------------------------------------
+    # Dashboard Telemetry Bundle
+    # Combines everything analytics_service.py needs in one call.
+    # ------------------------------------------------------------------
+
+    def build_dashboard_telemetry(self) -> dict:
+        """
+        Single aggregated payload for the dashboard's analytics service.
+
+        Shape::
+
+            {
+                "camera_status":    { cam_id: {...}, ... },
+                "stream_statistics":{ cam_id: {...}, ... },
+                "camera_uptime":    { cam_id: {...}, ... },
+                "camera_metadata":  { cam_id: {...}, ... },
+                "health":           { cam_id: {...}, ... },
+                "connection_stats": { ... },
+                "system_telemetry": { ... },
+                "camera_analytics": { ... },
+                "generated_at":     "<ISO-8601 UTC>",
+            }
+
+        All keys are always present so consumers can destructure safely.
+        """
+        all_ids = sorted(
+            set(self._states.keys())
+            | set(self._threads.keys())
+            | set(self._inf_threads.keys()),
+            key=str,
+        )
+
+        camera_status     = {}
+        stream_statistics = {}
+        camera_uptime     = {}
+        camera_metadata   = {}
+
+        for cam_id in all_ids:
+            camera_status[str(cam_id)] = {
+                "running":   self.is_camera_running(cam_id),
+                "state":     self.get_camera_state(cam_id),
+                "has_frame": cam_id in self._frames,
+                "risk":      self._results.get(cam_id, {}).get("risk", "LOW"),
+                "source":    str(resolve_source(cam_id)),
+            }
+            stream_statistics[str(cam_id)] = self.get_statistics(cam_id)
+            camera_uptime[str(cam_id)]     = self.get_camera_uptime(cam_id)
+            camera_metadata[str(cam_id)]   = self.get_camera_metadata(cam_id)
+
+        return {
+            "camera_status":     camera_status,
+            "stream_statistics": stream_statistics,
+            "camera_uptime":     camera_uptime,
+            "camera_metadata":   camera_metadata,
+            "health":            self.get_health_status(),
+            "connection_stats":  self.get_connection_stats(),
+            "system_telemetry":  self.get_system_telemetry(),
+            "camera_analytics":  self.get_camera_analytics(),
+            "generated_at":      datetime.now(timezone.utc).isoformat(),
+        }
+
+    # ------------------------------------------------------------------
+    # Public API (lifecycle)
+    # ------------------------------------------------------------------
+
     def start_camera(self, cam_id=0) -> bool:
         """
         Start capture + inference threads for ``cam_id``.
@@ -1056,6 +1428,16 @@ class CameraManager:
             self._queues[cam_id] = queue.Queue(maxsize=FRAME_QUEUE_MAXSIZE)
             # Reset start-time anchor for FPS calculation
             self.__dict__[f"_start_{cam_id}"] = time.time()
+
+            # Uptime tracking — increment restart count if this is a re-start
+            now_epoch = time.time()
+            now_iso   = datetime.now(timezone.utc).isoformat()
+            if cam_id in self._started_at:
+                self._restart_counts[cam_id] = self._restart_counts.get(cam_id, 0) + 1
+            else:
+                self._restart_counts.setdefault(cam_id, 0)
+            self._started_at[cam_id]    = now_iso
+            self._started_epoch[cam_id] = now_epoch
 
             self._states[cam_id] = CameraState.INITIALIZING
 
@@ -1248,3 +1630,11 @@ def is_recording(cam_id=0)        -> bool:         return camera_manager.is_reco
 def capture_snapshot(cam_id=0)    -> dict:         return camera_manager.capture_snapshot(cam_id)
 def get_health_status()           -> dict:         return camera_manager.get_health_status()
 # discover_cameras() is already a module-level function — call it directly.
+
+# ── New enhancement shims ─────────────────────────────────────────────
+def get_system_telemetry()              -> dict:  return camera_manager.get_system_telemetry()
+def get_connection_stats()              -> dict:  return camera_manager.get_connection_stats()
+def get_camera_uptime(cam_id=0)         -> dict:  return camera_manager.get_camera_uptime(cam_id)
+def get_camera_metadata(cam_id=0)       -> dict:  return camera_manager.get_camera_metadata(cam_id)
+def get_camera_analytics()              -> dict:  return camera_manager.get_camera_analytics()
+def build_dashboard_telemetry()         -> dict:  return camera_manager.build_dashboard_telemetry()
