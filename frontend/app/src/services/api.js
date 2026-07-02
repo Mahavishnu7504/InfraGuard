@@ -219,3 +219,13 @@ export const getAlerts =
     apiGet(
       `/activity/latest/${camId}`
     );
+
+// =====================================================
+// WORKER COMPLIANCE
+// =====================================================
+
+export const getWorkerCompliance =
+  () =>
+    apiGet(
+      "/activity/workers/compliance"
+    );
